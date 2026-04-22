@@ -1,0 +1,12 @@
+# React build output
+dist/
+build/
+
+# Environment files
+.env
+
+# Dependency folder
+node_modules/
+
+# Log files
+*.log
