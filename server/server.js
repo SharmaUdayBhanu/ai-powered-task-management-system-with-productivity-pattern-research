@@ -621,7 +621,7 @@ app.post("/api/auth/login", async (req, res) => {
       return res.status(400).json({ error: "Email is required" });
     }
 
-  const admin = await Admin.findOne({ email, password }).lean();
+    const admin = await Admin.findOne({ email, password }).lean();
     if (admin) {
       return res.json({ success: true, role: "admin" });
     }
