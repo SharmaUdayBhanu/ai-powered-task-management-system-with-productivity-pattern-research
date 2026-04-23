@@ -12,6 +12,11 @@ import {
   Line,
 } from "recharts";
 import { getWithRetry, sanitizeApiError } from "../lib/apiClient";
+import {
+  ENABLE_REALTIME,
+  REALTIME_SOCKET_OPTIONS,
+  REALTIME_SOCKET_URL,
+} from "../lib/realtime";
 
 const ProductivityDashboard = ({ employee, theme = "dark" }) => {
   const [stats, setStats] = useState(null);
@@ -95,10 +100,11 @@ const ProductivityDashboard = ({ employee, theme = "dark" }) => {
 
   useEffect(() => {
     if (!employee?._id) return;
+    if (!ENABLE_REALTIME) {
+      return undefined;
+    }
 
-    const socket = io(import.meta.env.VITE_API_URL || window.location.origin, {
-      transports: ["websocket"],
-    });
+    const socket = io(REALTIME_SOCKET_URL, REALTIME_SOCKET_OPTIONS);
 
     const refreshData = async () => {
       try {

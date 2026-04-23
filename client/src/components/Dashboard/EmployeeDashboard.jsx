@@ -6,8 +6,11 @@ import ProductivityDashboard from "../ProductivityDashboard";
 import { io } from "socket.io-client";
 import { Moon, Sun, TrendingDown, TrendingUp } from "lucide-react";
 import { getWithRetry, sanitizeApiError } from "../../lib/apiClient";
-
-const SOCKET_URL = import.meta.env.VITE_API_URL || window.location.origin;
+import {
+  ENABLE_REALTIME,
+  REALTIME_SOCKET_OPTIONS,
+  REALTIME_SOCKET_URL,
+} from "../../lib/realtime";
 
 const getPriorityWeight = (priority) => {
   if (priority === "High") return 3;
@@ -81,7 +84,11 @@ const EmployeeDashboard = ({ data }) => {
   }, [isModalOpen, data.email]);
 
   useEffect(() => {
-    const socket = io(SOCKET_URL, { transports: ["websocket"] });
+    if (!ENABLE_REALTIME) {
+      return undefined;
+    }
+
+    const socket = io(REALTIME_SOCKET_URL, REALTIME_SOCKET_OPTIONS);
 
     socket.on("employeeUpdated", ({ email, employee }) => {
       if (email === data.email) {

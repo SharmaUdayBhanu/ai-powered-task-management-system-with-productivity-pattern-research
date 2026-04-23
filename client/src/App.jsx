@@ -5,6 +5,18 @@ import AdminDashboard from "./components/Dashboard/AdminDashboard";
 
 const BASE_URL = import.meta.env.VITE_API_URL || "";
 
+const parseApiPayload = async (res) => {
+  const contentType = res.headers.get("content-type") || "";
+  if (contentType.includes("application/json")) {
+    return res.json();
+  }
+
+  const raw = await res.text();
+  return {
+    error: raw || `Request failed with status ${res.status}`,
+  };
+};
+
 const App = () => {
   const [user, setUser] = useState("");
   const [loggedInUserData, setLoggedInUserData] = useState(null);
@@ -32,7 +44,7 @@ const App = () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),
       });
-      const payload = await res.json();
+  const payload = await parseApiPayload(res);
 
       if (!res.ok) {
         if (res.status === 403 && payload?.requiresPasswordSetup) {
@@ -93,7 +105,7 @@ const App = () => {
           newPassword,
         }),
       });
-      const payload = await res.json();
+  const payload = await parseApiPayload(res);
 
       if (!res.ok) {
         setAuthError(payload?.error || "Unable to sign up");

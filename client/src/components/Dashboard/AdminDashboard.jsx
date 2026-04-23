@@ -13,8 +13,12 @@ import {
   postWithRetry,
   sanitizeApiError,
 } from "../../lib/apiClient";
+import {
+  ENABLE_REALTIME,
+  REALTIME_SOCKET_OPTIONS,
+  REALTIME_SOCKET_URL,
+} from "../../lib/realtime";
 
-const SOCKET_URL = import.meta.env.VITE_API_URL || window.location.origin;
 
 const toPercent = (value, base) => {
   const safeBase = Number(base) || 0;
@@ -290,7 +294,11 @@ const AdminDashboard = () => {
   }, [fetchDashboardData]);
 
   useEffect(() => {
-    const socket = io(SOCKET_URL, { transports: ["websocket"] });
+    if (!ENABLE_REALTIME) {
+      return undefined;
+    }
+
+    const socket = io(REALTIME_SOCKET_URL, REALTIME_SOCKET_OPTIONS);
     const triggerRefresh = () => {
       fetchDashboardData({ includeAI: false });
       scheduleAiRefresh();

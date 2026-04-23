@@ -12,6 +12,11 @@ import {
   ScatterChart,
   Scatter,
 } from "recharts";
+import {
+  ENABLE_REALTIME,
+  REALTIME_SOCKET_OPTIONS,
+  REALTIME_SOCKET_URL,
+} from "../../lib/realtime";
 
 const API_URL = `${import.meta.env.VITE_API_URL || ""}/api`;
 
@@ -57,6 +62,7 @@ const AdminEmployeeProductivity = ({ employee, theme = "dark" }) => {
       setLoading(false);
       return;
     }
+
     const fetchData = async () => {
       setLoading(true);
       try {
@@ -67,15 +73,18 @@ const AdminEmployeeProductivity = ({ employee, theme = "dark" }) => {
         setLoading(false);
       }
     };
+
     fetchData();
   }, [employee?._id, employee?.tasks?.length]);
 
   // Real-time updates
   useEffect(() => {
     if (!employee?._id) return;
-    const socket = io(import.meta.env.VITE_API_URL || window.location.origin, {
-      transports: ["websocket"],
-    });
+    if (!ENABLE_REALTIME) {
+      return undefined;
+    }
+
+    const socket = io(REALTIME_SOCKET_URL, REALTIME_SOCKET_OPTIONS);
 
     const refreshData = async () => {
       try {

@@ -1,12 +1,16 @@
 import { createContext, useState, useEffect } from "react";
 import axios from "axios";
 import { io } from "socket.io-client";
+import {
+  ENABLE_REALTIME,
+  REALTIME_SOCKET_OPTIONS,
+  REALTIME_SOCKET_URL,
+} from "../lib/realtime";
 
 export const AuthContext = createContext();
 
 const BASE_URL = import.meta.env.VITE_API_URL || "";
 const API_URL = `${BASE_URL}/api`;
-const SOCKET_URL = import.meta.env.VITE_API_URL || window.location.origin;
 
 const AuthProvider = ({ children }) => {
   const [userData, setUserData] = useState({ employees: [], admin: [] });
@@ -27,9 +31,11 @@ const AuthProvider = ({ children }) => {
   }, []);
 
   useEffect(() => {
-    const socket = io(SOCKET_URL, {
-      transports: ["websocket"],
-    });
+    if (!ENABLE_REALTIME) {
+      return undefined;
+    }
+
+    const socket = io(REALTIME_SOCKET_URL, REALTIME_SOCKET_OPTIONS);
 
     socket.on("employeeUpdated", ({ email, employee }) => {
       setUserData((prev) => ({
