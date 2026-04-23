@@ -35,7 +35,7 @@ const AuthProvider = ({ children }) => {
       setUserData((prev) => ({
         ...prev,
         employees: prev.employees.map((e) =>
-          e.email === email ? employee : e
+          e.email === email ? employee : e,
         ),
       }));
     });
@@ -44,28 +44,31 @@ const AuthProvider = ({ children }) => {
       setUserData((prev) => ({
         ...prev,
         employees: prev.employees.map((e) =>
-          e.email === email ? { ...e, tasks: [...e.tasks, task] } : e
+          e.email === email ? { ...e, tasks: [...e.tasks, task] } : e,
         ),
       }));
     });
 
-    socket.on("taskExplanationGenerated", ({ employeeEmail, updatedEmployee }) => {
-      if (updatedEmployee) {
-        setUserData((prev) => ({
-          ...prev,
-          employees: prev.employees.map((e) =>
-            e.email === employeeEmail ? updatedEmployee : e
-          ),
-        }));
-      }
-    });
+    socket.on(
+      "taskExplanationGenerated",
+      ({ employeeEmail, updatedEmployee }) => {
+        if (updatedEmployee) {
+          setUserData((prev) => ({
+            ...prev,
+            employees: prev.employees.map((e) =>
+              e.email === employeeEmail ? updatedEmployee : e,
+            ),
+          }));
+        }
+      },
+    );
 
     socket.on("taskStatusChanged", ({ email, employee }) => {
       if (employee) {
         setUserData((prev) => ({
           ...prev,
           employees: prev.employees.map((e) =>
-            e.email === email ? employee : e
+            e.email === email ? employee : e,
           ),
         }));
       }

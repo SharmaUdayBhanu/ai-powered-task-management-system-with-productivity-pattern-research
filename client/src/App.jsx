@@ -27,14 +27,11 @@ const App = () => {
     setAuthError("");
 
     try {
-      const res = await fetch(
-        `${BASE_URL}/api/auth/login`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email, password }),
-        },
-      );
+      const res = await fetch(`${BASE_URL}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
       const payload = await res.json();
 
       if (!res.ok) {
@@ -88,17 +85,14 @@ const App = () => {
     setAuthError("");
 
     try {
-      const res = await fetch(
-        `${BASE_URL}/api/auth/signup`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            email,
-            newPassword,
-          }),
-        },
-      );
+      const res = await fetch(`${BASE_URL}/api/auth/signup`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email,
+          newPassword,
+        }),
+      });
       const payload = await res.json();
 
       if (!res.ok) {

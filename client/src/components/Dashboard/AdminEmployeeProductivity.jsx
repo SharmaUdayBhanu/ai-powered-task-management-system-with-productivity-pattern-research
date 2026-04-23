@@ -21,7 +21,10 @@ const AdminEmployeeProductivity = ({ employee, theme = "dark" }) => {
   const [insights, setInsights] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  const fetchProductivityData = async (employeeId, { forceInsights = false } = {}) => {
+  const fetchProductivityData = async (
+    employeeId,
+    { forceInsights = false } = {},
+  ) => {
     const insightsPath = forceInsights
       ? `${API_URL}/productivity/${employeeId}/insights?force=true`
       : `${API_URL}/productivity/${employeeId}/insights`;
@@ -92,17 +95,21 @@ const AdminEmployeeProductivity = ({ employee, theme = "dark" }) => {
 
     socket.on("taskStatusChanged", ({ email }) => {
       if (employee.email === email) {
-        fetchProductivityData(employee._id, { forceInsights: true }).catch(() => {
-          refreshData();
-        });
+        fetchProductivityData(employee._id, { forceInsights: true }).catch(
+          () => {
+            refreshData();
+          },
+        );
       }
     });
 
     socket.on("taskActionCompleted", ({ email }) => {
       if (employee.email === email) {
-        fetchProductivityData(employee._id, { forceInsights: true }).catch(() => {
-          refreshData();
-        });
+        fetchProductivityData(employee._id, { forceInsights: true }).catch(
+          () => {
+            refreshData();
+          },
+        );
       }
     });
 

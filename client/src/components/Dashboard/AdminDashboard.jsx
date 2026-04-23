@@ -328,7 +328,9 @@ const AdminDashboard = () => {
         (task) => !task.isDeleted && !task.notAccepted,
       );
       const latestTasks = [...visibleTasks]
-        .sort((a, b) => getTaskActivityTimestamp(b) - getTaskActivityTimestamp(a))
+        .sort(
+          (a, b) => getTaskActivityTimestamp(b) - getTaskActivityTimestamp(a),
+        )
         .slice(0, 3)
         .map((task) => {
           const whenTs = getTaskActivityTimestamp(task);
@@ -355,10 +357,12 @@ const AdminDashboard = () => {
         completedCount: Number(stats.completedTaskCount) || 0,
         failedCount: Number(stats.failedTaskCount) || 0,
         activeCount:
-          Number(stats.activeTaskCount) || Number(employee.taskCounts?.active) || 0,
+          Number(stats.activeTaskCount) ||
+          Number(employee.taskCounts?.active) ||
+          0,
         newCount: Number(employee.taskCounts?.newTask) || 0,
         trendMeta: getTrendMeta(stats),
-  strengthTags: deriveStrengthTags({ ranking }),
+        strengthTags: deriveStrengthTags({ ranking }),
         cardSignalFallback: cardFallback,
       };
     });
@@ -852,138 +856,152 @@ const AdminDashboard = () => {
                   const patternText =
                     aiSignal?.pattern || employee.cardSignalFallback.pattern;
                   const riskText =
-                    aiSignal?.riskSignal || employee.cardSignalFallback.riskSignal;
+                    aiSignal?.riskSignal ||
+                    employee.cardSignalFallback.riskSignal;
                   const specializationText =
                     aiSignal?.specialization ||
                     employee.cardSignalFallback.specialization;
                   const changeText =
-                    aiSignal?.changeSignal || employee.cardSignalFallback.changeSignal;
+                    aiSignal?.changeSignal ||
+                    employee.cardSignalFallback.changeSignal;
 
                   return (
                     <>
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <h4 className="text-sm font-semibold">
-                      {employee.firstName}
-                    </h4>
-                    <p className="text-[11px] opacity-70">{employee.email}</p>
-                  </div>
-                  <div className="flex flex-col items-end gap-1">
-                    <span
-                      className={`rounded-full px-2 py-1 text-[10px] font-semibold ${employee.isPasswordSet ? "bg-emerald-500/20 text-emerald-300" : "bg-yellow-500/20 text-yellow-300"}`}
-                    >
-                      {employee.isPasswordSet
-                        ? "Activated"
-                        : "First login pending"}
-                    </span>
-                    <span
-                      className={`rounded-full px-2 py-1 text-[10px] font-semibold ${employee.trendMeta.className}`}
-                    >
-                      {employee.trendMeta.icon} {employee.trendMeta.label}
-                    </span>
-                  </div>
-                </div>
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <h4 className="text-sm font-semibold">
+                            {employee.firstName}
+                          </h4>
+                          <p className="text-[11px] opacity-70">
+                            {employee.email}
+                          </p>
+                        </div>
+                        <div className="flex flex-col items-end gap-1">
+                          <span
+                            className={`rounded-full px-2 py-1 text-[10px] font-semibold ${employee.isPasswordSet ? "bg-emerald-500/20 text-emerald-300" : "bg-yellow-500/20 text-yellow-300"}`}
+                          >
+                            {employee.isPasswordSet
+                              ? "Activated"
+                              : "First login pending"}
+                          </span>
+                          <span
+                            className={`rounded-full px-2 py-1 text-[10px] font-semibold ${employee.trendMeta.className}`}
+                          >
+                            {employee.trendMeta.icon} {employee.trendMeta.label}
+                          </span>
+                        </div>
+                      </div>
 
-                <div className="mt-2 flex flex-wrap gap-1.5">
-                  {employee.strengthTags.map((tag) => (
-                    <span
-                      key={`${employee.email}-${tag}`}
-                      className={`rounded-full px-2 py-1 text-[10px] font-semibold ${theme === "dark" ? "bg-cyan-500/15 text-cyan-300" : "bg-cyan-100 text-cyan-800"}`}
-                    >
-                      {tag}
-                    </span>
-                  ))}
-                  <span
-                    className={`rounded-full px-2 py-1 text-[10px] font-semibold ${theme === "dark" ? "bg-emerald-500/15 text-emerald-300" : "bg-emerald-100 text-emerald-800"}`}
-                  >
-                    {specializationText}
-                  </span>
-                </div>
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        {employee.strengthTags.map((tag) => (
+                          <span
+                            key={`${employee.email}-${tag}`}
+                            className={`rounded-full px-2 py-1 text-[10px] font-semibold ${theme === "dark" ? "bg-cyan-500/15 text-cyan-300" : "bg-cyan-100 text-cyan-800"}`}
+                          >
+                            {tag}
+                          </span>
+                        ))}
+                        <span
+                          className={`rounded-full px-2 py-1 text-[10px] font-semibold ${theme === "dark" ? "bg-emerald-500/15 text-emerald-300" : "bg-emerald-100 text-emerald-800"}`}
+                        >
+                          {specializationText}
+                        </span>
+                      </div>
 
-                <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
-                  <StatPill
-                    theme={theme}
-                    label="New"
-                    value={employee.taskCounts?.newTask || 0}
-                  />
-                  <StatPill
-                    theme={theme}
-                    label="Active"
-                    value={employee.taskCounts?.active || 0}
-                  />
-                  <StatPill
-                    theme={theme}
-                    label="Completed"
-                    value={employee.taskCounts?.completed || 0}
-                  />
-                  <StatPill
-                    theme={theme}
-                    label="Failed"
-                    value={employee.taskCounts?.failed || 0}
-                  />
-                </div>
+                      <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                        <StatPill
+                          theme={theme}
+                          label="New"
+                          value={employee.taskCounts?.newTask || 0}
+                        />
+                        <StatPill
+                          theme={theme}
+                          label="Active"
+                          value={employee.taskCounts?.active || 0}
+                        />
+                        <StatPill
+                          theme={theme}
+                          label="Completed"
+                          value={employee.taskCounts?.completed || 0}
+                        />
+                        <StatPill
+                          theme={theme}
+                          label="Failed"
+                          value={employee.taskCounts?.failed || 0}
+                        />
+                      </div>
 
-                <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
-                  <StatPill
-                    theme={theme}
-                    label="Score"
-                    value={
-                      employee.ranking?.productivityScore?.toFixed?.(1) || "0.0"
-                    }
-                  />
-                  <StatPill
-                    theme={theme}
-                    label="On-time"
-                    value={`${employee.ranking?.stats?.onTimePercent?.toFixed?.(1) || "0.0"}%`}
-                  />
-                  <StatPill
-                    theme={theme}
-                    label="Avg"
-                    value={`${employee.ranking?.stats?.averageCompletionTimeMinutes || 0} min`}
-                  />
-                </div>
+                      <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
+                        <StatPill
+                          theme={theme}
+                          label="Score"
+                          value={
+                            employee.ranking?.productivityScore?.toFixed?.(1) ||
+                            "0.0"
+                          }
+                        />
+                        <StatPill
+                          theme={theme}
+                          label="On-time"
+                          value={`${employee.ranking?.stats?.onTimePercent?.toFixed?.(1) || "0.0"}%`}
+                        />
+                        <StatPill
+                          theme={theme}
+                          label="Avg"
+                          value={`${employee.ranking?.stats?.averageCompletionTimeMinutes || 0} min`}
+                        />
+                      </div>
 
-                <div className="mt-3 rounded-md border border-white/10 bg-black/10 p-2.5 text-[11px]">
-                  <p className="font-semibold opacity-80">Why this score</p>
-                  <ul className="mt-1 list-disc space-y-1 pl-4 opacity-85">
-                    <li>
-                      Completion outcomes: {employee.completedCount} completed
-                      vs {employee.failedCount} failed.
-                    </li>
-                    <li>
-                      Pace:{" "}
-                      {employee.ranking?.stats?.averageCompletionTimeMinutes ||
-                        0}{" "}
-                      min average completion.
-                    </li>
-                    <li>
-                      Reliability:{" "}
-                      {employee.ranking?.stats?.onTimePercent?.toFixed?.(1) ||
-                        "0.0"}
-                      % on-time delivery.
-                    </li>
-                  </ul>
-                  <p className="mt-2 text-[11px] opacity-85">Pattern: {patternText}</p>
-                  <p className="mt-1 text-[11px] opacity-85">Risk signal: {riskText}</p>
-                  <p className="mt-1 text-[11px] opacity-85">Change signal: {changeText}</p>
-                </div>
+                      <div className="mt-3 rounded-md border border-white/10 bg-black/10 p-2.5 text-[11px]">
+                        <p className="font-semibold opacity-80">
+                          Why this score
+                        </p>
+                        <ul className="mt-1 list-disc space-y-1 pl-4 opacity-85">
+                          <li>
+                            Completion outcomes: {employee.completedCount}{" "}
+                            completed vs {employee.failedCount} failed.
+                          </li>
+                          <li>
+                            Pace:{" "}
+                            {employee.ranking?.stats
+                              ?.averageCompletionTimeMinutes || 0}{" "}
+                            min average completion.
+                          </li>
+                          <li>
+                            Reliability:{" "}
+                            {employee.ranking?.stats?.onTimePercent?.toFixed?.(
+                              1,
+                            ) || "0.0"}
+                            % on-time delivery.
+                          </li>
+                        </ul>
+                        <p className="mt-2 text-[11px] opacity-85">
+                          Pattern: {patternText}
+                        </p>
+                        <p className="mt-1 text-[11px] opacity-85">
+                          Risk signal: {riskText}
+                        </p>
+                        <p className="mt-1 text-[11px] opacity-85">
+                          Change signal: {changeText}
+                        </p>
+                      </div>
 
-                <div className="mt-3">
-                  <p className="text-[11px] font-semibold opacity-70">
-                    Recent activity
-                  </p>
-                  {employee.latestTasks.length === 0 ? (
-                    <p className="text-xs opacity-70">
-                      No recent activity yet.
-                    </p>
-                  ) : (
-                    <ul className="mt-1 list-disc space-y-1 pl-4 text-xs">
-                      {employee.latestTasks.map((line, idx) => (
-                        <li key={idx}>{line}</li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
+                      <div className="mt-3">
+                        <p className="text-[11px] font-semibold opacity-70">
+                          Recent activity
+                        </p>
+                        {employee.latestTasks.length === 0 ? (
+                          <p className="text-xs opacity-70">
+                            No recent activity yet.
+                          </p>
+                        ) : (
+                          <ul className="mt-1 list-disc space-y-1 pl-4 text-xs">
+                            {employee.latestTasks.map((line, idx) => (
+                              <li key={idx}>{line}</li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
                     </>
                   );
                 })()}
