@@ -647,6 +647,43 @@ app.get("/api/health", async (req, res) => {
   });
 });
 
+app.get("/api/health/db", async (req, res) => {
+  const startedAt = Date.now();
+
+  try {
+    await connectDB();
+    return res.json({
+      ok: true,
+      dbConnected: mongoose.connection.readyState === 1,
+      dbState: mongoose.connection.readyState,
+      durationMs: Date.now() - startedAt,
+      env: {
+        hasMongoUri: Boolean(process.env.MONGODB_URI),
+        hasGroqKey: Boolean(process.env.GROQ_API_KEY),
+      },
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    return res.status(503).json({
+      ok: false,
+      dbConnected: false,
+      dbState: mongoose.connection.readyState,
+      durationMs: Date.now() - startedAt,
+      env: {
+        hasMongoUri: Boolean(process.env.MONGODB_URI),
+        hasGroqKey: Boolean(process.env.GROQ_API_KEY),
+      },
+      error: {
+        name: error?.name || "Error",
+        code: error?.code || null,
+        message: error?.message || "Unknown DB connection error",
+      },
+      hint: "If hasMongoUri=true and this fails, check MongoDB Atlas network access, user credentials, and region latency.",
+      timestamp: new Date().toISOString(),
+    });
+  }
+});
+
 // Create a new employee (admin flow)
 app.post("/api/employees", async (req, res) => {
   try {

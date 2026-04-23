@@ -6,7 +6,7 @@ export default async function handler(req, res) {
   try {
     // Keep health endpoint available even when DB is unreachable,
     // so deployment diagnostics can still be accessed.
-    if (requestPath !== "/api/health") {
+    if (!requestPath.startsWith("/api/health")) {
       await connectDB();
     }
 
