@@ -11,13 +11,20 @@ export const AuthContext = createContext();
 
 const BASE_URL = import.meta.env.VITE_API_URL || "";
 const API_URL = `${BASE_URL}/api`;
+const ENABLE_AUTH_PREFETCH =
+  import.meta.env.VITE_ENABLE_AUTH_PREFETCH === "true";
 
 const AuthProvider = ({ children }) => {
   const [userData, setUserData] = useState({ employees: [], admin: [] });
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
 
   useEffect(() => {
+    if (!ENABLE_AUTH_PREFETCH) {
+      return undefined;
+    }
+
     const fetchData = async () => {
+      setLoading(true);
       try {
         const empRes = await axios.get(`${API_URL}/employees`);
         setUserData({ employees: empRes.data });

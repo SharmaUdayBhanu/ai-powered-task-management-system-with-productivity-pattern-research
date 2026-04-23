@@ -19,7 +19,6 @@ import {
   REALTIME_SOCKET_URL,
 } from "../../lib/realtime";
 
-
 const toPercent = (value, base) => {
   const safeBase = Number(base) || 0;
   if (safeBase <= 0) return 0;

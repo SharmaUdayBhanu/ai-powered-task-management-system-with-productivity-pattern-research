@@ -44,7 +44,7 @@ const App = () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),
       });
-  const payload = await parseApiPayload(res);
+      const payload = await parseApiPayload(res);
 
       if (!res.ok) {
         if (res.status === 403 && payload?.requiresPasswordSetup) {
@@ -105,7 +105,7 @@ const App = () => {
           newPassword,
         }),
       });
-  const payload = await parseApiPayload(res);
+      const payload = await parseApiPayload(res);
 
       if (!res.ok) {
         setAuthError(payload?.error || "Unable to sign up");

@@ -545,6 +545,17 @@ app.use(express.static(path.join(process.cwd(), "backend", "dist")));
 
 // API Endpoints
 
+app.get("/api/health", async (req, res) => {
+  const dbState = mongoose.connection.readyState;
+  return res.json({
+    ok: true,
+    dbConnected: dbState === 1,
+    dbState,
+    vercel: Boolean(process.env.VERCEL),
+    timestamp: new Date().toISOString(),
+  });
+});
+
 // Create a new employee (admin flow)
 app.post("/api/employees", async (req, res) => {
   try {
@@ -610,7 +621,7 @@ app.post("/api/auth/login", async (req, res) => {
       return res.status(400).json({ error: "Email is required" });
     }
 
-    const admin = await Admin.findOne({ email, password });
+  const admin = await Admin.findOne({ email, password }).lean();
     if (admin) {
       return res.json({ success: true, role: "admin" });
     }
