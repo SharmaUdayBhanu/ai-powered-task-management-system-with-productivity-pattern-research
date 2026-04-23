@@ -525,10 +525,10 @@ const connectDB = async () => {
   dbConnectPromise = mongoose
     .connect(mongoUri, {
       serverSelectionTimeoutMS: Number(
-        process.env.MONGO_SERVER_SELECTION_TIMEOUT_MS || 8000,
+        process.env.MONGO_SERVER_SELECTION_TIMEOUT_MS || 12000,
       ),
-      connectTimeoutMS: Number(process.env.MONGO_CONNECT_TIMEOUT_MS || 8000),
-      socketTimeoutMS: Number(process.env.MONGO_SOCKET_TIMEOUT_MS || 10000),
+      connectTimeoutMS: Number(process.env.MONGO_CONNECT_TIMEOUT_MS || 12000),
+      socketTimeoutMS: Number(process.env.MONGO_SOCKET_TIMEOUT_MS || 15000),
       maxPoolSize: Number(process.env.MONGO_MAX_POOL_SIZE || 5),
     })
     .then((connection) => {
