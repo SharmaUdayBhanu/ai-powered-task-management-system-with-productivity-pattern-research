@@ -1,10 +1,5 @@
 import React from "react";
-import {
-  BadgePlus,
-  CheckCircle2,
-  TriangleAlert,
-  Zap,
-} from "lucide-react";
+import { BadgePlus, CheckCircle2, TriangleAlert, Zap } from "lucide-react";
 
 const TaskListNumbers = ({ data, theme = "dark" }) => {
   const cards = [
@@ -48,42 +43,42 @@ const TaskListNumbers = ({ data, theme = "dark" }) => {
 
   return (
     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
-      {cards.map((card) => (
+      {cards.map((card) =>
         (() => {
           const Icon = card.icon;
           return (
-        <article
-          key={card.key}
-          className={`rounded-xl border p-4 ${
-            theme === "dark"
-              ? "border-white/10 bg-[#121212] text-white"
-              : "border-gray-200 bg-white text-gray-900"
-          }`}
-        >
-          <div className="flex items-start justify-between">
-            <div>
-              <p className="text-xs uppercase tracking-wide opacity-70">
-                {card.label}
-              </p>
-              <p className="mt-1 text-3xl font-semibold">{card.value}</p>
-            </div>
-            <span
-              className={`rounded-md p-1 ${
-                theme === "dark" ? "bg-white/5" : "bg-gray-100"
+            <article
+              key={card.key}
+              className={`rounded-xl border p-4 ${
+                theme === "dark"
+                  ? "border-white/10 bg-[#121212] text-white"
+                  : "border-gray-200 bg-white text-gray-900"
               }`}
-              aria-hidden="true"
             >
-              <Icon size={20} className={card.iconClassName} />
-            </span>
-          </div>
-          <div
-            className={`mt-3 h-2 rounded-full bg-gradient-to-r ${card.tone}`}
-          />
-          <p className="mt-2 text-xs opacity-70">{card.hint}</p>
-        </article>
+              <div className="flex items-start justify-between">
+                <div>
+                  <p className="text-xs uppercase tracking-wide opacity-70">
+                    {card.label}
+                  </p>
+                  <p className="mt-1 text-3xl font-semibold">{card.value}</p>
+                </div>
+                <span
+                  className={`rounded-md p-1 ${
+                    theme === "dark" ? "bg-white/5" : "bg-gray-100"
+                  }`}
+                  aria-hidden="true"
+                >
+                  <Icon size={20} className={card.iconClassName} />
+                </span>
+              </div>
+              <div
+                className={`mt-3 h-2 rounded-full bg-gradient-to-r ${card.tone}`}
+              />
+              <p className="mt-2 text-xs opacity-70">{card.hint}</p>
+            </article>
           );
-        })()
-      ))}
+        })(),
+      )}
     </div>
   );
 };
