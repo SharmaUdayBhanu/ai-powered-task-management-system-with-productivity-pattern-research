@@ -27,6 +27,29 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 5000;
 let dbConnectPromise = null;
+let lastDbConnectError = null;
+let lastDbConnectAt = null;
+
+const redactMongoUri = (uri = "") => {
+  try {
+    const normalized = String(uri || "").trim();
+    if (!normalized) return "<missing>";
+
+    return normalized.replace(
+      /(mongodb(?:\+srv)?:\/\/)([^:]+):([^@]+)@/i,
+      "$1$2:***@",
+    );
+  } catch {
+    return "<unavailable>";
+  }
+};
+
+const serializeError = (err) => ({
+  name: err?.name || "Error",
+  message: err?.message || "Unknown error",
+  code: err?.code || null,
+  stackTop: String(err?.stack || "").split("\n").slice(0, 2).join(" | "),
+});
 
 const toTaskDeadline = (taskDateValue) => {
   if (!taskDateValue) return null;
@@ -489,8 +512,18 @@ const connectDB = async () => {
     return dbConnectPromise;
   }
 
+  const mongoUri = process.env.MONGODB_URI || "mongodb://localhost:27017/jobportal";
+  const connectStart = Date.now();
+  const usingEnvMongoUri = Boolean(process.env.MONGODB_URI);
+
+  console.log("[db] connect start", {
+    usingEnvMongoUri,
+    readyState: mongoose.connection.readyState,
+    uri: redactMongoUri(mongoUri),
+  });
+
   dbConnectPromise = mongoose
-    .connect(process.env.MONGODB_URI || "mongodb://localhost:27017/jobportal", {
+    .connect(mongoUri, {
       serverSelectionTimeoutMS: Number(
         process.env.MONGO_SERVER_SELECTION_TIMEOUT_MS || 8000,
       ),
@@ -499,12 +532,28 @@ const connectDB = async () => {
       maxPoolSize: Number(process.env.MONGO_MAX_POOL_SIZE || 5),
     })
     .then((connection) => {
+      lastDbConnectError = null;
+      lastDbConnectAt = new Date().toISOString();
       console.log("MongoDB connected successfully");
+      console.log("[db] connect success", {
+        ms: Date.now() - connectStart,
+        readyState: mongoose.connection.readyState,
+      });
       return connection;
     })
     .catch((err) => {
       dbConnectPromise = null;
+      lastDbConnectError = {
+        at: new Date().toISOString(),
+        ...serializeError(err),
+      };
       console.error("MongoDB connection error:", err.message);
+      console.error("[db] connect failure", {
+        ms: Date.now() - connectStart,
+        usingEnvMongoUri,
+        readyState: mongoose.connection.readyState,
+        error: serializeError(err),
+      });
       throw err;
     });
 
@@ -540,6 +589,31 @@ app.set("io", io);
 app.use(cors());
 app.use(bodyParser.json());
 
+app.use((req, res, next) => {
+  if (!req.path.startsWith("/api")) {
+    return next();
+  }
+
+  const startedAt = Date.now();
+  const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  req.requestId = requestId;
+
+  res.on("finish", () => {
+    const durationMs = Date.now() - startedAt;
+    if (res.statusCode >= 500 || req.path.includes("/auth/login") || req.path === "/api/employees") {
+      console.log("[api] response", {
+        requestId,
+        method: req.method,
+        path: req.path,
+        status: res.statusCode,
+        durationMs,
+      });
+    }
+  });
+
+  next();
+});
+
 // Serve static files from the frontend build (if you build client separately)
 app.use(express.static(path.join(process.cwd(), "backend", "dist")));
 
@@ -552,6 +626,15 @@ app.get("/api/health", async (req, res) => {
     dbConnected: dbState === 1,
     dbState,
     vercel: Boolean(process.env.VERCEL),
+    env: {
+      hasMongoUri: Boolean(process.env.MONGODB_URI),
+      hasGroqKey: Boolean(process.env.GROQ_API_KEY),
+      nodeEnv: process.env.NODE_ENV || "unknown",
+    },
+    db: {
+      lastDbConnectAt,
+      lastDbConnectError,
+    },
     timestamp: new Date().toISOString(),
   });
 });
@@ -666,6 +749,13 @@ app.post("/api/auth/login", async (req, res) => {
     });
   } catch (err) {
     console.error("Auth login error:", err);
+    console.error("[api] auth/login failure", {
+      requestId: req.requestId,
+      email: String(req.body?.email || "").trim().toLowerCase(),
+      error: serializeError(err),
+      dbState: mongoose.connection.readyState,
+      hasMongoUri: Boolean(process.env.MONGODB_URI),
+    });
     return res.status(500).json({ error: "Server error" });
   }
 });
@@ -785,6 +875,12 @@ app.get("/api/employees", async (req, res) => {
     res.json(employees);
   } catch (err) {
     console.error(err);
+    console.error("[api] employees failure", {
+      requestId: req.requestId,
+      error: serializeError(err),
+      dbState: mongoose.connection.readyState,
+      hasMongoUri: Boolean(process.env.MONGODB_URI),
+    });
     res.status(500).json({ error: "Server error" });
   }
 });
