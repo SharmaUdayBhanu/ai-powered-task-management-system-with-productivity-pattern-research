@@ -48,7 +48,10 @@ const serializeError = (err) => ({
   name: err?.name || "Error",
   message: err?.message || "Unknown error",
   code: err?.code || null,
-  stackTop: String(err?.stack || "").split("\n").slice(0, 2).join(" | "),
+  stackTop: String(err?.stack || "")
+    .split("\n")
+    .slice(0, 2)
+    .join(" | "),
 });
 
 const toTaskDeadline = (taskDateValue) => {
@@ -512,7 +515,8 @@ const connectDB = async () => {
     return dbConnectPromise;
   }
 
-  const mongoUri = process.env.MONGODB_URI || "mongodb://localhost:27017/jobportal";
+  const mongoUri =
+    process.env.MONGODB_URI || "mongodb://localhost:27017/jobportal";
   const connectStart = Date.now();
   const usingEnvMongoUri = Boolean(process.env.MONGODB_URI);
 
@@ -600,7 +604,11 @@ app.use((req, res, next) => {
 
   res.on("finish", () => {
     const durationMs = Date.now() - startedAt;
-    if (res.statusCode >= 500 || req.path.includes("/auth/login") || req.path === "/api/employees") {
+    if (
+      res.statusCode >= 500 ||
+      req.path.includes("/auth/login") ||
+      req.path === "/api/employees"
+    ) {
       console.log("[api] response", {
         requestId,
         method: req.method,
@@ -751,7 +759,9 @@ app.post("/api/auth/login", async (req, res) => {
     console.error("Auth login error:", err);
     console.error("[api] auth/login failure", {
       requestId: req.requestId,
-      email: String(req.body?.email || "").trim().toLowerCase(),
+      email: String(req.body?.email || "")
+        .trim()
+        .toLowerCase(),
       error: serializeError(err),
       dbState: mongoose.connection.readyState,
       hasMongoUri: Boolean(process.env.MONGODB_URI),
