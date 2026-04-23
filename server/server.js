@@ -740,6 +740,7 @@ app.post("/api/employees", async (req, res) => {
 // Unified login endpoint (admin + employee with first-time flow)
 app.post("/api/auth/login", async (req, res) => {
   try {
+    await connectDB();
     const email = String(req.body?.email || "")
       .trim()
       .toLowerCase();
