@@ -1,4 +1,10 @@
 import React from "react";
+import {
+  BadgePlus,
+  CheckCircle2,
+  TriangleAlert,
+  Zap,
+} from "lucide-react";
 
 const TaskListNumbers = ({ data, theme = "dark" }) => {
   const cards = [
@@ -6,7 +12,8 @@ const TaskListNumbers = ({ data, theme = "dark" }) => {
       key: "newTask",
       label: "New Tasks",
       value: data?.taskCounts?.newTask || 0,
-      icon: "🆕",
+      icon: BadgePlus,
+      iconClassName: "text-cyan-300",
       tone: "from-indigo-500/70 to-cyan-500/70",
       hint: "Pending acceptance",
     },
@@ -14,7 +21,8 @@ const TaskListNumbers = ({ data, theme = "dark" }) => {
       key: "active",
       label: "In Progress",
       value: data?.taskCounts?.active || 0,
-      icon: "⚡",
+      icon: Zap,
+      iconClassName: "text-sky-300",
       tone: "from-blue-500/70 to-sky-500/70",
       hint: "Tasks underway",
     },
@@ -22,7 +30,8 @@ const TaskListNumbers = ({ data, theme = "dark" }) => {
       key: "completed",
       label: "Completed",
       value: data?.taskCounts?.completed || 0,
-      icon: "✅",
+      icon: CheckCircle2,
+      iconClassName: "text-emerald-300",
       tone: "from-emerald-500/70 to-green-500/70",
       hint: "Great momentum",
     },
@@ -30,7 +39,8 @@ const TaskListNumbers = ({ data, theme = "dark" }) => {
       key: "failed",
       label: "Failed",
       value: data?.taskCounts?.failed || 0,
-      icon: "⚠️",
+      icon: TriangleAlert,
+      iconClassName: "text-orange-300",
       tone: "from-rose-500/70 to-orange-500/70",
       hint: "Needs attention",
     },
@@ -39,6 +49,9 @@ const TaskListNumbers = ({ data, theme = "dark" }) => {
   return (
     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
       {cards.map((card) => (
+        (() => {
+          const Icon = card.icon;
+          return (
         <article
           key={card.key}
           className={`rounded-xl border p-4 ${
@@ -54,8 +67,13 @@ const TaskListNumbers = ({ data, theme = "dark" }) => {
               </p>
               <p className="mt-1 text-3xl font-semibold">{card.value}</p>
             </div>
-            <span className="text-xl" aria-hidden="true">
-              {card.icon}
+            <span
+              className={`rounded-md p-1 ${
+                theme === "dark" ? "bg-white/5" : "bg-gray-100"
+              }`}
+              aria-hidden="true"
+            >
+              <Icon size={20} className={card.iconClassName} />
             </span>
           </div>
           <div
@@ -63,6 +81,8 @@ const TaskListNumbers = ({ data, theme = "dark" }) => {
           />
           <p className="mt-2 text-xs opacity-70">{card.hint}</p>
         </article>
+          );
+        })()
       ))}
     </div>
   );

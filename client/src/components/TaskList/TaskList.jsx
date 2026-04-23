@@ -395,13 +395,22 @@ const TaskList = ({ data, onAccept, vertical, theme, onModalStateChange }) => {
     if (taskIdToHighlight) {
       setHighlightedTaskId(taskIdToHighlight);
 
-      // Scroll to the highlighted tile smoothly
+      // Keep the highlighted tile visible horizontally without causing page jump
       setTimeout(() => {
         const taskElement = document.querySelector(
           `[data-task-id="${taskIdToHighlight}"]`,
         );
-        if (taskElement) {
-          taskElement.scrollIntoView({ behavior: "smooth", block: "center" });
+        const container = scrollRef.current;
+        if (taskElement && container) {
+          const tileLeft = taskElement.offsetLeft;
+          const tileCenter = tileLeft + taskElement.clientWidth / 2;
+          const viewportCenter = container.clientWidth / 2;
+          const targetScrollLeft = Math.max(0, tileCenter - viewportCenter);
+
+          container.scrollTo({
+            left: targetScrollLeft,
+            behavior: "smooth",
+          });
         }
       }, 100);
 

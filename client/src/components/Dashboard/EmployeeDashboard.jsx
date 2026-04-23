@@ -4,6 +4,7 @@ import TaskListNumbers from "../other/TaskListNumbers";
 import TaskList from "../TaskList/TaskList";
 import ProductivityDashboard from "../ProductivityDashboard";
 import { io } from "socket.io-client";
+import { Moon, Sun, TrendingDown, TrendingUp } from "lucide-react";
 import { getWithRetry, sanitizeApiError } from "../../lib/apiClient";
 
 const SOCKET_URL = import.meta.env.VITE_API_URL;
@@ -215,16 +216,33 @@ const EmployeeDashboard = ({ data }) => {
     >
       <div className="flex justify-end mb-2">
         <button
+          type="button"
+          aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
           className={
             theme === "dark"
-              ? "px-4 py-2 rounded bg-gray-700 text-white flex items-center gap-2"
-              : "px-4 py-2 rounded bg-yellow-300 text-black flex items-center gap-2"
+              ? "group relative inline-flex h-11 w-28 items-center rounded-full border border-white/15 bg-[#111111] px-2 text-white transition-all duration-300 hover:border-cyan-300/60"
+              : "group relative inline-flex h-11 w-28 items-center rounded-full border border-gray-300 bg-gray-100 px-2 text-gray-900 transition-all duration-300 hover:border-amber-400"
           }
           onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
         >
-          <span>{theme === "dark" ? "🌙" : "☀️"}</span>
-          <span className="font-semibold">
-            {theme === "dark" ? "Dark" : "Light"} Mode
+          <span
+            className={`absolute top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-full shadow-md transition-all duration-300 ${
+              theme === "dark"
+                ? "left-2 bg-slate-800 text-cyan-200"
+                : "left-[calc(100%-2.5rem)] bg-amber-300 text-amber-800"
+            }`}
+          >
+            {theme === "dark" ? <Moon size={16} /> : <Sun size={16} />}
+          </span>
+          <span className="sr-only">
+            {theme === "dark" ? "Dark mode active" : "Light mode active"}
+          </span>
+          <span
+            className={`text-xs font-semibold tracking-wide uppercase transition-all duration-300 ${
+              theme === "dark" ? "ml-11" : "ml-2"
+            }`}
+          >
+            {theme === "dark" ? "Dark" : "Light"}
           </span>
         </button>
       </div>
@@ -301,8 +319,13 @@ const EmployeeDashboard = ({ data }) => {
               <p className="text-xs uppercase tracking-wide opacity-70">
                 Weekly comparison
               </p>
-              <p className="mt-1 text-sm font-semibold">
-                {weeklySummary.delta >= 0 ? "📈" : "📉"} {summaryText}
+              <p className="mt-1 flex items-center gap-2 text-sm font-semibold">
+                {weeklySummary.delta >= 0 ? (
+                  <TrendingUp size={16} className="text-emerald-400" />
+                ) : (
+                  <TrendingDown size={16} className="text-rose-400" />
+                )}
+                <span>{summaryText}</span>
               </p>
               <p className="mt-1 text-xs opacity-70">
                 This week: {weeklySummary.current} completed • Last week:{" "}
