@@ -13,7 +13,7 @@ import {
   Scatter,
 } from "recharts";
 
-const API_URL = import.meta.env.VITE_API_URL + "/api";
+const API_URL = `${import.meta.env.VITE_API_URL || ""}/api`;
 
 const AdminEmployeeProductivity = ({ employee, theme = "dark" }) => {
   const [stats, setStats] = useState(null);
@@ -70,7 +70,7 @@ const AdminEmployeeProductivity = ({ employee, theme = "dark" }) => {
   // Real-time updates
   useEffect(() => {
     if (!employee?._id) return;
-    const socket = io(import.meta.env.VITE_API_URL, {
+    const socket = io(import.meta.env.VITE_API_URL || window.location.origin, {
       transports: ["websocket"],
     });
 

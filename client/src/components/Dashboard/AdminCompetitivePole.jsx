@@ -3,7 +3,7 @@ import axios from "axios";
 import { io } from "socket.io-client";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from "recharts";
 
-const API_URL = import.meta.env.VITE_API_URL + "/api";
+const API_URL = `${import.meta.env.VITE_API_URL || ""}/api`;
 
 const AdminCompetitivePole = ({ employees, theme = "dark" }) => {
   const [leaderboardData, setLeaderboardData] = useState([]);
@@ -24,7 +24,9 @@ const AdminCompetitivePole = ({ employees, theme = "dark" }) => {
     fetchRankings();
 
     // Real-time updates
-    const socket = io(import.meta.env.VITE_API_URL, { transports: ["websocket"] });
+    const socket = io(import.meta.env.VITE_API_URL || window.location.origin, {
+      transports: ["websocket"],
+    });
     socket.on("taskStatusChanged", () => {
       fetchRankings();
     });

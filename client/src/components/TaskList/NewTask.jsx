@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
 import TaskDeadlineTimer from "./TaskDeadlineTimer";
 
-const API_URL = import.meta.env.VITE_API_URL + "/api";
+const API_URL = `${import.meta.env.VITE_API_URL || ""}/api`;
 
 const NewTask = ({ data, onAccept, theme = "dark" }) => {
   const [task, setTask] = useState(data);

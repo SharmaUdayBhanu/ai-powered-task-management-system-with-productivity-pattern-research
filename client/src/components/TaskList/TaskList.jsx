@@ -7,7 +7,7 @@ import CompleteTask from "./CompleteTask";
 import FailedTask from "./FailedTask";
 import ExplainTaskModal from "../ExplainTaskModal";
 
-const API_URL = import.meta.env.VITE_API_URL + "/api";
+const API_URL = `${import.meta.env.VITE_API_URL || ""}/api`;
 
 const FILTER_OPTIONS = [
   { value: "all", label: "All" },

@@ -6,6 +6,7 @@ import dotenv from "dotenv";
 import http from "http";
 import { Server as SocketIOServer } from "socket.io";
 import path from "path";
+import { fileURLToPath } from "url";
 
 import { Employee, Admin } from "./models.js";
 import geminiRouter from "./api/gemini/geminiRoutes.js";
@@ -25,6 +26,7 @@ dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+let dbConnectPromise = null;
 
 const toTaskDeadline = (taskDateValue) => {
   if (!taskDateValue) return null;
@@ -479,36 +481,53 @@ const generateAndCacheTaskGuidance = async ({
 
 // MongoDB connection
 const connectDB = async () => {
-  try {
-    await mongoose.connect(
-      process.env.MONGODB_URI || "mongodb://localhost:27017/jobportal",
-    );
-    console.log("MongoDB connected successfully");
-  } catch (err) {
-    console.error("MongoDB connection error:", err.message);
-    process.exit(1);
+  if (mongoose.connection.readyState === 1) {
+    return mongoose.connection;
   }
+
+  if (dbConnectPromise) {
+    return dbConnectPromise;
+  }
+
+  dbConnectPromise = mongoose
+    .connect(process.env.MONGODB_URI || "mongodb://localhost:27017/jobportal")
+    .then((connection) => {
+      console.log("MongoDB connected successfully");
+      return connection;
+    })
+    .catch((err) => {
+      dbConnectPromise = null;
+      console.error("MongoDB connection error:", err.message);
+      throw err;
+    });
+
+  return dbConnectPromise;
 };
 
-// HTTP + Socket.io server
-const server = http.createServer(app);
-const io = new SocketIOServer(server, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST", "PUT"],
-  },
-});
+// HTTP + Socket.io server (only for traditional Node server runtime)
+let server = null;
+let io = null;
+
+if (!process.env.VERCEL) {
+  server = http.createServer(app);
+  io = new SocketIOServer(server, {
+    cors: {
+      origin: "*",
+      methods: ["GET", "POST", "PUT"],
+    },
+  });
+
+  io.on("connection", (socket) => {
+    // Basic connection log; can be extended for rooms / auth later
+    console.log("Client connected:", socket.id);
+
+    socket.on("disconnect", () => {
+      console.log("Client disconnected:", socket.id);
+    });
+  });
+}
 
 app.set("io", io);
-
-io.on("connection", (socket) => {
-  // Basic connection log; can be extended for rooms / auth later
-  console.log("Client connected:", socket.id);
-
-  socket.on("disconnect", () => {
-    console.log("Client disconnected:", socket.id);
-  });
-});
 
 // Middleware
 app.use(cors());
@@ -1152,12 +1171,26 @@ app.post("/api/admin/login", async (req, res) => {
 // Start server
 const startServer = async () => {
   await connectDB();
+  if (!server) {
+    throw new Error(
+      "HTTP server is not initialized in this runtime. Use /api handler on Vercel.",
+    );
+  }
   server.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
   });
 };
 
-startServer().catch((err) => {
-  console.error("Failed to start server:", err);
-  process.exit(1);
-});
+const isDirectRun =
+  process.argv[1] &&
+  path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
+
+if (isDirectRun) {
+  startServer().catch((err) => {
+    console.error("Failed to start server:", err);
+    process.exit(1);
+  });
+}
+
+export { app, connectDB, startServer };
+export default app;

@@ -78,7 +78,8 @@ const ExplainTaskModal = ({
   if (!isOpen) return null;
 
   const handleBackdropClick = (e) => {
-    // Prevent closing on backdrop click - only close via close button
+    // Prevent closing on backdrop click - only close v
+    // ia close button
     if (e.target === e.currentTarget) {
       // Do nothing - modal stays open
     }

@@ -14,7 +14,7 @@ import {
   sanitizeApiError,
 } from "../../lib/apiClient";
 
-const SOCKET_URL = import.meta.env.VITE_API_URL;
+const SOCKET_URL = import.meta.env.VITE_API_URL || window.location.origin;
 
 const toPercent = (value, base) => {
   const safeBase = Number(base) || 0;

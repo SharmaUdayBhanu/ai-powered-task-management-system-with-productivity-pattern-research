@@ -7,7 +7,7 @@ import { io } from "socket.io-client";
 import { Moon, Sun, TrendingDown, TrendingUp } from "lucide-react";
 import { getWithRetry, sanitizeApiError } from "../../lib/apiClient";
 
-const SOCKET_URL = import.meta.env.VITE_API_URL;
+const SOCKET_URL = import.meta.env.VITE_API_URL || window.location.origin;
 
 const getPriorityWeight = (priority) => {
   if (priority === "High") return 3;

@@ -3,6 +3,8 @@ import Login from "./components/Auth/Login";
 import EmployeeDashboard from "./components/Dashboard/EmployeeDashboard";
 import AdminDashboard from "./components/Dashboard/AdminDashboard";
 
+const BASE_URL = import.meta.env.VITE_API_URL || "";
+
 const App = () => {
   const [user, setUser] = useState("");
   const [loggedInUserData, setLoggedInUserData] = useState(null);
@@ -26,7 +28,7 @@ const App = () => {
 
     try {
       const res = await fetch(
-        `${import.meta.env.VITE_API_URL}/api/auth/login`,
+        `${BASE_URL}/api/auth/login`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -87,7 +89,7 @@ const App = () => {
 
     try {
       const res = await fetch(
-        `${import.meta.env.VITE_API_URL}/api/auth/signup`,
+        `${BASE_URL}/api/auth/signup`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },

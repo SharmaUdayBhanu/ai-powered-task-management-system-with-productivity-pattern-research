@@ -1,0 +1,18 @@
+{
+  "name": "ai-driven-task-management-vercel",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "axios": "^1.13.2",
+    "body-parser": "^2.2.0",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.0",
+    "express": "^5.1.0",
+    "groq-sdk": "^1.1.2",
+    "mongoose": "^8.19.4",
+    "socket.io": "^4.8.1"
+  }
+}

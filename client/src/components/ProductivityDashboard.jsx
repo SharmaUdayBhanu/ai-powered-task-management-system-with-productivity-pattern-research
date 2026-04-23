@@ -96,7 +96,7 @@ const ProductivityDashboard = ({ employee, theme = "dark" }) => {
   useEffect(() => {
     if (!employee?._id) return;
 
-    const socket = io(import.meta.env.VITE_API_URL, {
+    const socket = io(import.meta.env.VITE_API_URL || window.location.origin, {
       transports: ["websocket"],
     });
 

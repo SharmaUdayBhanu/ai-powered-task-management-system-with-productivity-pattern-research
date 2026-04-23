@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import axios from "axios";
 import TaskAIInsight from "./TaskAIInsight";
 
-const API_URL = import.meta.env.VITE_API_URL + "/api";
+const API_URL = `${import.meta.env.VITE_API_URL || ""}/api`;
 
 const FailedTask = ({ data, onExplain, onDelete, theme = "dark" }) => {
   const [loading, setLoading] = useState(false);
