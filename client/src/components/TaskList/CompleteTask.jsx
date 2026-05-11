@@ -1,6 +1,8 @@
 import React, { useState } from "react";
 import axios from "axios";
 import TaskAIInsight from "./TaskAIInsight";
+import TaskRiskBadge from "./TaskRiskBadge";
+import GroupTaskBadge from "./GroupTaskBadge";
 
 const API_URL = `${import.meta.env.VITE_API_URL || ""}/api`;
 
@@ -77,10 +79,12 @@ const CompleteTask = ({ data, onExplain, onDelete, theme = "dark" }) => {
         </h3>
         <h4 className="text-sm">{data.taskDate}</h4>
       </div>
-      <div className="flex justify-between items-center mt-2 flex-shrink-0">
+      <div className="flex flex-wrap items-center gap-2 mt-2 flex-shrink-0">
         <span className="text-xs font-semibold bg-black/10 text-white px-2 py-1 rounded">
           AI Suggested Priority: {data.aiPriority || "Medium"}
         </span>
+        <TaskRiskBadge task={data} />
+        <GroupTaskBadge task={data} />
       </div>
       <h2 className="mt-3 text-xl font-semibold flex-shrink-0 line-clamp-2">
         {data.taskTitle}
@@ -110,14 +114,6 @@ const CompleteTask = ({ data, onExplain, onDelete, theme = "dark" }) => {
         >
           {loading ? "Deleting..." : "Delete Task"}
         </button>
-        {onExplain && (
-          <button
-            onClick={onExplain}
-            className="w-full bg-white/90 text-green-700 text-xs font-semibold py-1.5 rounded-lg border border-green-700 hover:bg-white transition-all duration-200"
-          >
-            Explain Task (AI)
-          </button>
-        )}
       </div>
     </div>
   );

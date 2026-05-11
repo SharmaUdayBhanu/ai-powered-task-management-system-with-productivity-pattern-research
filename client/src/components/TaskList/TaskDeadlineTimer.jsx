@@ -54,15 +54,28 @@ const parseDurationMinutes = (value) => {
   return 0;
 };
 
-const TaskDeadlineTimer = ({ task, theme = "dark" }) => {
+const TaskDeadlineTimer = ({ task, employeeEmail, theme = "dark" }) => {
   const [now, setNow] = useState(Date.now());
 
   const estimatedMinutes = Number(task?.estimatedDuration);
+  const groupMemberMinutes = Array.isArray(task?.groupMemberEstimates)
+    ? Number(
+        task.groupMemberEstimates.find(
+          (entry) =>
+            String(entry?.email || "").toLowerCase() ===
+            String(employeeEmail || "").toLowerCase(),
+        )?.estimatedMinutes,
+      )
+    : 0;
   const explainEstimatedMinutes = parseDurationMinutes(
     task?.explainEstimatedTime,
   );
   const resolvedEstimatedMinutes =
-    estimatedMinutes > 0 ? estimatedMinutes : explainEstimatedMinutes;
+    groupMemberMinutes > 0
+      ? groupMemberMinutes
+      : estimatedMinutes > 0
+        ? estimatedMinutes
+        : explainEstimatedMinutes;
   const estimationPending = Boolean(task?.aiEstimationPending);
   const acceptanceTimeLimitMinutes = Number(task?.acceptanceTimeLimitMinutes);
 

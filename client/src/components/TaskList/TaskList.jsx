@@ -20,6 +20,12 @@ const FILTER_OPTIONS = [
 ];
 
 const getTaskId = (task) => task._id || `${task.taskTitle}-${task.taskDate}`;
+const getTaskAliasIds = (task) => {
+  const ids = [];
+  if (task?._id) ids.push(task._id);
+  ids.push(`${task.taskTitle}-${task.taskDate}`);
+  return ids;
+};
 
 const matchesFilter = (task, filter) => {
   if (filter === "all") return true;
@@ -82,6 +88,7 @@ const TaskList = ({ data, onAccept, vertical, theme, onModalStateChange }) => {
   });
   const [activeFilter, setActiveFilter] = useState("all");
   const [filterOpen, setFilterOpen] = useState(false);
+  const [taskOverrides, setTaskOverrides] = useState({});
   const [isDraggingScrollbar, setIsDraggingScrollbar] = useState(false);
   const [scrollState, setScrollState] = useState({
     left: 0,
@@ -101,7 +108,15 @@ const TaskList = ({ data, onAccept, vertical, theme, onModalStateChange }) => {
   });
 
   const visibleTasks = useMemo(() => {
-    const filtered = (data.tasks || []).filter(
+    const mergedTasks = (data.tasks || []).map((task) => {
+      const aliases = getTaskAliasIds(task);
+      const override = aliases
+        .map((id) => taskOverrides[id])
+        .find(Boolean);
+      return override ? { ...task, ...override } : task;
+    });
+
+    const filtered = mergedTasks.filter(
       (task) => !task.isDeleted && matchesFilter(task, activeFilter),
     );
 
@@ -114,7 +129,47 @@ const TaskList = ({ data, onAccept, vertical, theme, onModalStateChange }) => {
         (PRIORITY_ORDER[a.aiPriority] || 0)
       );
     });
-  }, [data.tasks, activeFilter]);
+  }, [data.tasks, activeFilter, taskOverrides]);
+
+  const currentTask = useMemo(
+    () =>
+      (data.tasks || []).find((task) => getTaskId(task) === currentTaskId),
+    [data.tasks, currentTaskId],
+  );
+
+  const handleStatusChange = (payload) => {
+    if (!payload) return;
+    const taskId = payload.taskId;
+    if (!taskId) return;
+    setTaskOverrides((prev) => ({
+      ...prev,
+      [taskId]: payload.updatedTask || {
+        completed: payload.statusType === "completed",
+        failed: payload.statusType === "failed",
+        active: false,
+      },
+    }));
+  };
+
+  const handleAcceptTask = (payload) => {
+    const updatedTask = payload?.updatedTask;
+    const taskKey =
+      payload?.taskId || (updatedTask ? getTaskId(updatedTask) : null);
+    if (taskKey && updatedTask) {
+      const aliases = getTaskAliasIds(updatedTask);
+      setTaskOverrides((prev) => {
+        const next = { ...prev };
+        aliases.forEach((id) => {
+          next[id] = updatedTask;
+        });
+        next[taskKey] = updatedTask;
+        return next;
+      });
+    }
+    if (typeof onAccept === "function") {
+      onAccept();
+    }
+  };
 
   const updateScrollState = () => {
     const el = scrollRef.current;
@@ -274,6 +329,13 @@ const TaskList = ({ data, onAccept, vertical, theme, onModalStateChange }) => {
         summary: task.explainSummary || "Task guidance is available.",
         steps: Array.isArray(task.explainSteps) ? task.explainSteps : [],
         estimated_time: task.explainEstimatedTime || "N/A",
+        stepAssignments: Array.isArray(task.groupStepAssignments)
+          ? task.groupStepAssignments
+          : [],
+        stepChecks: Array.isArray(task.explainStepChecks)
+          ? task.explainStepChecks
+          : [],
+        source: task.explainSource || "AI",
         fromCache: true,
       };
       modalStateRef.current.explanation = cachedExplanation;
@@ -301,6 +363,7 @@ const TaskList = ({ data, onAccept, vertical, theme, onModalStateChange }) => {
           complexity: task.complexity,
           estimatedDuration: task.estimatedDuration,
         },
+        groupId: task.groupId,
       };
       const res = await axios.post(`${API_URL}/gemini/explain-task`, body);
       if (!hasValidExplanation(res.data)) {
@@ -563,7 +626,7 @@ const TaskList = ({ data, onAccept, vertical, theme, onModalStateChange }) => {
               {elem.active ? (
                 <AcceptTask
                   data={{ ...elem, email: data.email }}
-                  onStatusChange={onAccept}
+                  onStatusChange={handleStatusChange}
                   onExplain={() => handleExplain(elem)}
                   insightTeaser={
                     elem.explainSummary ||
@@ -576,19 +639,22 @@ const TaskList = ({ data, onAccept, vertical, theme, onModalStateChange }) => {
               ) : elem.newTask || elem.notAccepted ? (
                 <NewTask
                   data={{ ...elem, email: data.email }}
-                  onAccept={onAccept}
+                  onAccept={handleAcceptTask}
+                  onExplain={() => handleExplain(elem)}
                   theme={theme}
                 />
               ) : elem.completed ? (
                 <CompleteTask
                   data={{ ...elem, email: data.email }}
                   onDelete={onAccept}
+                  onExplain={() => handleExplain(elem)}
                   theme={theme}
                 />
               ) : elem.failed ? (
                 <FailedTask
                   data={{ ...elem, email: data.email }}
                   onDelete={onAccept}
+                  onExplain={() => handleExplain(elem)}
                   theme={theme}
                 />
               ) : null}
@@ -615,7 +681,11 @@ const TaskList = ({ data, onAccept, vertical, theme, onModalStateChange }) => {
         loading={modalLoading}
         error={modalError}
         taskKey={currentTaskId}
+        taskId={currentTask?._id}
         theme={theme}
+        employeeEmail={data.email}
+        groupId={currentTask?.groupId}
+        taskCompleted={Boolean(currentTask?.completed)}
       />
     </>
   );

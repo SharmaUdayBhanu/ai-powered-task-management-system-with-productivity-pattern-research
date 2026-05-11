@@ -42,7 +42,58 @@ export const taskSchema = new mongoose.Schema({
   // Gemini explain-task cache
   explainSummary: { type: String },
   explainSteps: [{ type: String }],
+  explainStepChecks: [{ type: Boolean }],
   explainEstimatedTime: { type: String },
+  explainSource: { type: String, enum: ["AI", "System"], default: "System" },
+
+  // Group-task metadata. Individual tasks remain fully backward compatible.
+  groupTask: { type: Boolean, default: false },
+  groupId: { type: String },
+  groupMembers: [
+    {
+      email: String,
+      name: String,
+      role: String,
+      inferredSpeciality: String,
+      accepted: { type: Boolean, default: false },
+      acceptedAt: Date,
+    },
+  ],
+  groupAcceptedEmails: [{ type: String }],
+  groupStepAssignments: [
+    {
+      step: String,
+      assignedEmail: String,
+      assignedName: String,
+      completed: { type: Boolean, default: false },
+      completedBy: String,
+      completedAt: Date,
+    },
+  ],
+  groupMemberEstimates: [
+    {
+      email: String,
+      estimatedMinutes: Number,
+    },
+  ],
+
+  chatEnabled: { type: Boolean, default: false },
+  chatClosed: { type: Boolean, default: false },
+  chatMessages: [
+    {
+      messageId: { type: String },
+      senderName: { type: String },
+      senderEmail: { type: String },
+      senderRole: { type: String },
+      message: { type: String },
+      createdAt: { type: Date },
+      type: {
+        type: String,
+        enum: ["user", "system", "assistant"],
+        default: "user",
+      },
+    },
+  ],
 
   // Soft delete flag - tasks marked as deleted are hidden from UI but kept in analytics
   isDeleted: { type: Boolean, default: false },
@@ -58,6 +109,9 @@ export const employeeSchema = new mongoose.Schema({
   isFirstLogin: { type: Boolean, default: true },
   isPasswordSet: { type: Boolean, default: false },
   isActivated: { type: Boolean, default: false },
+  inferredSpeciality: { type: String },
+  isArchived: { type: Boolean, default: false },
+  archivedAt: { type: Date },
   taskCounts: {
     active: { type: Number, default: 0 },
     newTask: { type: Number, default: 0 },

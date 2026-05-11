@@ -7,6 +7,7 @@ import http from "http";
 import { Server as SocketIOServer } from "socket.io";
 import path from "path";
 import { fileURLToPath } from "url";
+import bcrypt from "bcryptjs";
 
 import { Employee, Admin } from "./models.js";
 import geminiRouter from "./api/gemini/geminiRoutes.js";
@@ -29,6 +30,25 @@ const PORT = process.env.PORT || 5000;
 let dbConnectPromise = null;
 let lastDbConnectError = null;
 let lastDbConnectAt = null;
+
+const isBcryptHash = (value = "") => /^\$2[aby]\$/.test(String(value));
+
+const verifyPassword = async (stored, incoming) => {
+  if (!stored) return false;
+  if (isBcryptHash(stored)) {
+    return bcrypt.compare(String(incoming || ""), stored);
+  }
+  return String(stored) === String(incoming || "");
+};
+
+const upgradePasswordIfNeeded = async (modelInstance, incomingPassword) => {
+  if (!modelInstance?.password) return;
+  if (isBcryptHash(modelInstance.password)) return;
+
+  const hashed = await bcrypt.hash(String(incomingPassword || ""), 10);
+  modelInstance.password = hashed;
+  await modelInstance.save();
+};
 
 const redactMongoUri = (uri = "") => {
   try {
@@ -65,6 +85,13 @@ const toTaskDeadline = (taskDateValue) => {
     deadline.setHours(23, 59, 59, 999);
   }
   return deadline;
+};
+
+const addDaysToTaskDate = (taskDateValue, daysToAdd) => {
+  const base = taskDateValue ? new Date(taskDateValue) : new Date();
+  if (Number.isNaN(base.getTime())) return null;
+  base.setDate(base.getDate() + daysToAdd);
+  return base;
 };
 
 const computeOnTime = (completedAt, taskDateValue) => {
@@ -129,6 +156,135 @@ const computeTaskCounts = (tasks = []) => ({
   failed: tasks.filter((t) => t.failed && !t.isDeleted && !t.notAccepted)
     .length,
 });
+
+const normalizeStepChecks = (task = {}, steps = []) => {
+  const existing = Array.isArray(task.explainStepChecks)
+    ? task.explainStepChecks
+    : [];
+  if (!steps.length) return [];
+  if (existing.length === steps.length) {
+    return existing.map((value) => Boolean(value));
+  }
+  return steps.map((_, idx) => Boolean(existing[idx]));
+};
+
+const areSingleTaskStepsComplete = (task = {}) => {
+  const steps = Array.isArray(task.explainSteps) ? task.explainSteps : [];
+  if (steps.length === 0) return true;
+  const checks = normalizeStepChecks(task, steps);
+  return checks.length === steps.length && checks.every(Boolean);
+};
+
+const areGroupTaskStepsCompleteForEmployee = (task = {}, employeeEmail) => {
+  const assignments = Array.isArray(task.groupStepAssignments)
+    ? task.groupStepAssignments
+    : [];
+  if (assignments.length === 0) return true;
+  const normalizedEmail = String(employeeEmail || "")
+    .trim()
+    .toLowerCase();
+  const assigned = assignments.filter(
+    (step) =>
+      String(step.assignedEmail || "")
+        .trim()
+        .toLowerCase() === normalizedEmail,
+  );
+  if (assigned.length === 0) return true;
+  return assigned.every((step) => Boolean(step.completed));
+};
+
+const canMarkTaskComplete = (task = {}, employeeEmail) => {
+  if (task.groupTask && task.groupId) {
+    return areGroupTaskStepsCompleteForEmployee(task, employeeEmail);
+  }
+  return areSingleTaskStepsComplete(task);
+};
+
+const isChatEnabledForTask = (task = {}) => {
+  if (task.groupTask && task.groupId) return true;
+  return Boolean(task.chatEnabled || task.active);
+};
+
+const isChatOpenForTask = (task = {}) => {
+  if (!isChatEnabledForTask(task)) return false;
+  if (task.chatClosed) return false;
+  return Boolean(task.active && !task.newTask && !task.completed && !task.failed);
+};
+
+const buildChatMessage = ({
+  senderName,
+  senderEmail,
+  senderRole,
+  message,
+  type = "user",
+}) => ({
+  messageId: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+  senderName: String(senderName || "System").trim(),
+  senderEmail: senderEmail ? String(senderEmail).trim() : undefined,
+  senderRole: senderRole ? String(senderRole).trim() : undefined,
+  message: String(message || "").trim(),
+  createdAt: new Date(),
+  type,
+});
+
+const appendChatMessageForTask = async ({
+  employee,
+  task,
+  chatMessage,
+  ioInstance,
+}) => {
+  if (!employee || !task || !chatMessage?.message) return null;
+  if (!isChatOpenForTask(task)) return null;
+  task.chatMessages = Array.isArray(task.chatMessages) ? task.chatMessages : [];
+  task.chatMessages.push(chatMessage);
+  await employee.save();
+  ioInstance?.emit("taskChatMessage", {
+    taskId: task._id,
+    groupId: task.groupId,
+    message: chatMessage,
+  });
+  ioInstance?.emit("employeeUpdated", {
+    email: employee.email,
+    employee,
+  });
+  return employee;
+};
+
+const appendChatMessageForGroup = async ({
+  groupId,
+  chatMessage,
+  ioInstance,
+}) => {
+  if (!groupId || !chatMessage?.message) return [];
+  const employees = await Employee.find({ "tasks.groupId": groupId });
+  if (!employees.length) return [];
+
+  const updated = [];
+  for (const employee of employees) {
+    const task = employee.tasks.find((item) => item.groupId === groupId);
+    if (!task) continue;
+    if (task.chatClosed) continue;
+    task.chatMessages = Array.isArray(task.chatMessages)
+      ? task.chatMessages
+      : [];
+    task.chatMessages.push(chatMessage);
+    await employee.save();
+    updated.push(employee);
+  }
+
+  ioInstance?.emit("taskChatMessage", {
+    groupId,
+    message: chatMessage,
+  });
+  updated.forEach((employee) =>
+    ioInstance?.emit("employeeUpdated", {
+      email: employee.email,
+      employee,
+    }),
+  );
+
+  return updated;
+};
 
 const clampDurationMinutes = (minutes) => {
   const numeric = Number(minutes);
@@ -234,6 +390,296 @@ const normalizePriorityValue = (value) => {
   return ["High", "Medium", "Low"].includes(normalized) ? normalized : "Medium";
 };
 
+const inferEmployeeSpeciality = (employee = {}) => {
+  const role = String(employee.role || "").toLowerCase();
+  const taskText = (employee.tasks || [])
+    .map(
+      (task) =>
+        `${task.category || ""} ${task.taskTitle || ""} ${task.taskDescription || ""}`,
+    )
+    .join(" ")
+    .toLowerCase();
+  const text = `${role} ${taskText}`;
+
+  if (/design|ui|ux|figma|prototype|visual/.test(text)) return "Design";
+  if (/data|analytics|report|metric|dashboard|insight/.test(text))
+    return "Analytics";
+  if (/manager|planning|coordination|stakeholder|review/.test(text))
+    return "Coordination";
+  if (/test|qa|bug|quality/.test(text)) return "Quality";
+  if (/dev|code|api|frontend|backend|engineering|feature/.test(text))
+    return "Development";
+  return "Generalist";
+};
+
+const buildGroupMembers = (employees = []) =>
+  employees.map((employee) => ({
+    email: employee.email,
+    name: [employee.firstName, employee.lastName].filter(Boolean).join(" "),
+    role: employee.role || "employee",
+    accepted: false,
+  }));
+
+const assignGroupSteps = ({ steps = [], members = [] }) => {
+  if (!steps.length || !members.length) return [];
+  return steps.map((step, idx) => {
+    const lower = String(step || "").toLowerCase();
+    const preferred =
+      members.find((member) => {
+        const profile = String(member.role || "").toLowerCase();
+        return (
+          (/design|wireframe|visual|ui|ux/.test(lower) &&
+            /design|ui|ux|designer/.test(profile)) ||
+          (/data|metric|report|analysis|dashboard/.test(lower) &&
+            /analytic|data|analyst/.test(profile)) ||
+          (/test|qa|verify|bug/.test(lower) &&
+            /quality|qa|test/.test(profile)) ||
+          (/plan|coordinate|review|stakeholder/.test(lower) &&
+            /manager|coordination|lead|owner/.test(profile)) ||
+          (/code|api|build|implement|develop/.test(lower) &&
+            /dev|engineer|developer|development/.test(profile))
+        );
+      }) || members[idx % members.length];
+
+    return {
+      step,
+      assignedEmail: preferred.email,
+      assignedName: preferred.name || preferred.email,
+      completed: false,
+    };
+  });
+};
+
+const syncGroupTaskFields = async ({ groupId, fields, ioInstance }) => {
+  if (!groupId || !fields || typeof fields !== "object") return;
+  const setFields = Object.fromEntries(
+    Object.entries(fields).map(([key, value]) => [`tasks.$.${key}`, value]),
+  );
+  const employees = await Employee.find({ "tasks.groupId": groupId });
+  await Employee.updateMany({ "tasks.groupId": groupId }, { $set: setFields });
+  employees.forEach((employee) => {
+    ioInstance?.emit("employeeUpdated", {
+      email: employee.email,
+      employee,
+    });
+  });
+};
+
+const pickCanonicalGroupTask = (tasks = []) => {
+  if (!tasks.length) return null;
+  let best = tasks[0];
+  let bestScore = -1;
+
+  tasks.forEach((task) => {
+    const assignmentCount = Array.isArray(task.groupStepAssignments)
+      ? task.groupStepAssignments.length
+      : 0;
+    const stepsCount = Array.isArray(task.explainSteps)
+      ? task.explainSteps.length
+      : 0;
+    const membersCount = Array.isArray(task.groupMembers)
+      ? task.groupMembers.length
+      : 0;
+    const summaryScore = task.explainSummary ? 10 : 0;
+    const score =
+      assignmentCount * 100 + stepsCount * 10 + membersCount + summaryScore;
+
+    if (score > bestScore) {
+      bestScore = score;
+      best = task;
+    }
+  });
+
+  return best;
+};
+
+const buildGroupMembersFromEmployees = ({ employees = [], tasks = [] }) => {
+  const memberMap = new Map();
+  const acceptedAtMap = new Map();
+
+  tasks.forEach((task) => {
+    (task.groupMembers || []).forEach((member) => {
+      const email = String(member?.email || "").toLowerCase();
+      if (!email) return;
+      if (!memberMap.has(email)) {
+        memberMap.set(email, {
+          email,
+          name: member.name,
+          role: member.role,
+          accepted: Boolean(member.accepted),
+          acceptedAt: member.acceptedAt,
+        });
+      }
+      if (member.acceptedAt) {
+        acceptedAtMap.set(email, member.acceptedAt);
+      }
+    });
+  });
+
+  employees.forEach((employee) => {
+    const email = String(employee.email || "").toLowerCase();
+    if (!email) return;
+    const existing = memberMap.get(email) || {};
+    memberMap.set(email, {
+      email,
+      name:
+        existing.name ||
+        [employee.firstName, employee.lastName].filter(Boolean).join(" ") ||
+        employee.email,
+      role: existing.role || employee.role || "employee",
+      accepted: Boolean(existing.accepted),
+      acceptedAt: existing.acceptedAt || acceptedAtMap.get(email) || null,
+    });
+  });
+
+  return Array.from(memberMap.values());
+};
+
+const assignGroupStepsByRole = ({ steps = [], members = [] }) => {
+  if (!steps.length || !members.length) return [];
+  return steps.map((step, idx) => {
+    const lower = String(step || "").toLowerCase();
+    const preferred =
+      members.find((member) => {
+        const profile = String(member.role || "").toLowerCase();
+        return (
+          (/design|wireframe|visual|ui|ux/.test(lower) &&
+            /design|ui|ux|designer/.test(profile)) ||
+          (/data|metric|report|analysis|dashboard/.test(lower) &&
+            /analytic|data|analyst/.test(profile)) ||
+          (/test|qa|verify|bug/.test(lower) &&
+            /quality|qa|test/.test(profile)) ||
+          (/plan|coordinate|review|stakeholder/.test(lower) &&
+            /manager|coordination|lead|owner/.test(profile)) ||
+          (/code|api|build|implement|develop/.test(lower) &&
+            /dev|engineer|developer|development/.test(profile))
+        );
+      }) || members[idx % members.length];
+
+    return {
+      step,
+      assignedEmail: preferred.email,
+      assignedName: preferred.name || preferred.email,
+      completed: false,
+    };
+  });
+};
+
+const buildGroupMemberEstimates = ({ assignments = [], totalMinutes = 0 }) => {
+  if (!assignments.length || totalMinutes <= 0) return [];
+  const baseMinutes = Math.floor(totalMinutes / assignments.length);
+  let remainder = totalMinutes % assignments.length;
+  const totals = {};
+
+  assignments.forEach((assignment) => {
+    const allocation = baseMinutes + (remainder > 0 ? 1 : 0);
+    if (remainder > 0) remainder -= 1;
+    if (!assignment.assignedEmail) return;
+    totals[assignment.assignedEmail] =
+      (totals[assignment.assignedEmail] || 0) + allocation;
+  });
+
+  return Object.entries(totals).map(([email, estimatedMinutes]) => ({
+    email,
+    estimatedMinutes,
+  }));
+};
+
+const normalizeGroupTaskData = async ({ groupId, ioInstance }) => {
+  if (!groupId) return false;
+  const employees = await Employee.find({ "tasks.groupId": groupId });
+  if (!employees.length) return false;
+
+  const tasks = employees
+    .map((employee) =>
+      (employee.tasks || []).find((task) => task.groupId === groupId),
+    )
+    .filter(Boolean);
+
+  if (!tasks.length) return false;
+
+  const canonical = pickCanonicalGroupTask(tasks);
+  const acceptedEmails = Array.from(
+    new Set(
+      tasks.flatMap((task) =>
+        Array.isArray(task.groupAcceptedEmails) ? task.groupAcceptedEmails : [],
+      ),
+    ),
+  );
+
+  const members = buildGroupMembersFromEmployees({ employees, tasks }).map(
+    (member) => ({
+      ...member,
+      accepted: acceptedEmails.includes(member.email),
+    }),
+  );
+
+  let assignments = Array.isArray(canonical.groupStepAssignments)
+    ? canonical.groupStepAssignments.map((item) => item.toObject?.() || item)
+    : [];
+
+  if (!assignments.length) {
+    const fallbackTask = tasks.find(
+      (task) =>
+        Array.isArray(task.groupStepAssignments) &&
+        task.groupStepAssignments.length > 0,
+    );
+    if (fallbackTask?.groupStepAssignments?.length) {
+      assignments = fallbackTask.groupStepAssignments.map(
+        (item) => item.toObject?.() || item,
+      );
+    }
+  }
+
+  const explainSteps = Array.isArray(canonical.explainSteps)
+    ? canonical.explainSteps
+    : [];
+
+  if (!assignments.length && explainSteps.length > 0) {
+    assignments = assignGroupStepsByRole({ steps: explainSteps, members });
+  }
+
+  const fields = {
+    groupTask: true,
+    groupMembers: members,
+    groupAcceptedEmails: acceptedEmails,
+  };
+
+  if (assignments.length) fields.groupStepAssignments = assignments;
+  if (canonical.explainSummary)
+    fields.explainSummary = canonical.explainSummary;
+  if (explainSteps.length) fields.explainSteps = explainSteps;
+  if (canonical.explainEstimatedTime) {
+    fields.explainEstimatedTime = canonical.explainEstimatedTime;
+  }
+  if (canonical.explainSource) fields.explainSource = canonical.explainSource;
+
+  if (assignments.length) {
+    const totalMinutes =
+      Number(canonical.estimatedDuration) ||
+      parseDurationStringToMinutes(canonical.explainEstimatedTime) ||
+      0;
+    const estimates = buildGroupMemberEstimates({
+      assignments,
+      totalMinutes,
+    });
+    if (estimates.length) fields.groupMemberEstimates = estimates;
+  }
+
+  await syncGroupTaskFields({ groupId, fields, ioInstance });
+  return true;
+};
+
+const collectGroupIdsFromEmployees = (employees = []) => {
+  const groupIds = new Set();
+  employees.forEach((employee) => {
+    (employee.tasks || []).forEach((task) => {
+      if (task?.groupId) groupIds.add(task.groupId);
+    });
+  });
+  return groupIds;
+};
+
 const enrichTaskAiMetadataInBackground = async ({
   employeeEmail,
   task,
@@ -327,6 +773,87 @@ const enrichTaskAiMetadataInBackground = async ({
       employee: updatedEmployee,
     });
   }
+};
+
+const enrichGroupTaskAiMetadataInBackground = async ({
+  groupId,
+  baseTask,
+  hasManualEstimate,
+  ioInstance,
+}) => {
+  if (!groupId || !baseTask) return;
+
+  const fallbackEstimatedMinutes =
+    computeFallbackEstimatedDurationMinutes(baseTask);
+  let aiPriority = normalizePriorityValue(baseTask.aiPriority);
+  let aiPriorityReason =
+    baseTask.aiPriorityReason ||
+    "Fallback priority applied while AI processing is unavailable.";
+  let estimatedDuration = hasManualEstimate
+    ? normalizeEstimatedDurationMinutes(
+        baseTask.estimatedDuration,
+        fallbackEstimatedMinutes,
+      )
+    : fallbackEstimatedMinutes;
+
+  try {
+    const prompt = buildPriorityPrompt({
+      title: baseTask.taskTitle || "",
+      description: baseTask.taskDescription || "",
+      metadata: {
+        category: baseTask.category || "",
+        estimatedDuration: hasManualEstimate
+          ? baseTask.estimatedDuration
+          : null,
+        complexity: baseTask.complexity,
+      },
+    });
+
+    const raw = await callGemini(prompt, {
+      maxRetries: 1,
+      baseDelayMs: 2000,
+      context: "group-task-priority-and-estimate-background",
+      lockKey: `group-task-priority-and-estimate-background:${groupId}`,
+    });
+
+    const parsed = safeParseJson(raw, {});
+    aiPriority = normalizePriorityValue(parsed?.priority);
+    aiPriorityReason =
+      String(parsed?.reason || "").trim() ||
+      `AI marked this task as ${aiPriority} priority based on urgency and complexity.`;
+
+    if (!hasManualEstimate) {
+      const extractedDuration = extractEstimatedDurationCandidate(parsed);
+      estimatedDuration = normalizeEstimatedDurationMinutes(
+        extractedDuration,
+        fallbackEstimatedMinutes,
+      );
+    }
+  } catch (err) {
+    recordAiFallback("server.group-task-priority-and-estimate");
+    aiPriority = aiPriority || "Medium";
+    aiPriorityReason =
+      "AI temporarily unavailable. Applied fallback priority and estimated duration.";
+    if (!hasManualEstimate) {
+      estimatedDuration = fallbackEstimatedMinutes;
+    }
+  }
+
+  const fields = {
+    aiPriority,
+    aiPriorityReason,
+    aiEstimationPending: false,
+  };
+
+  if (!hasManualEstimate) {
+    fields.estimatedDuration = estimatedDuration;
+  }
+
+  await syncGroupTaskFields({
+    groupId,
+    fields,
+    ioInstance,
+  });
 };
 
 const applyTaskTimeouts = (employeeOrUpdate) => {
@@ -750,14 +1277,22 @@ app.post("/api/auth/login", async (req, res) => {
       return res.status(400).json({ error: "Email is required" });
     }
 
-    const admin = await Admin.findOne({ email, password }).lean();
+    const admin = await Admin.findOne({ email });
     if (admin) {
-      return res.json({ success: true, role: "admin" });
+      const adminMatch = await verifyPassword(admin.password, password);
+      if (adminMatch) {
+        await upgradePasswordIfNeeded(admin, password);
+        return res.json({ success: true, role: "admin" });
+      }
     }
 
     const employee = await Employee.findOne({ email });
     if (!employee) {
       return res.status(401).json({ error: "Invalid credentials" });
+    }
+
+    if (employee.isArchived) {
+      return res.status(403).json({ error: "Employee account is archived" });
     }
 
     const inferredPasswordSet =
@@ -784,9 +1319,12 @@ app.post("/api/auth/login", async (req, res) => {
       });
     }
 
-    if (employee.password !== password) {
+    const employeeMatch = await verifyPassword(employee.password, password);
+    if (!employeeMatch) {
       return res.status(401).json({ error: "Invalid credentials" });
     }
+
+    await upgradePasswordIfNeeded(employee, password);
 
     return res.json({
       success: true,
@@ -839,7 +1377,7 @@ app.post("/api/auth/set-password", async (req, res) => {
       });
     }
 
-    employee.password = newPassword;
+    employee.password = await bcrypt.hash(newPassword, 10);
     employee.isPasswordSet = true;
     employee.isFirstLogin = false;
     employee.isActivated = true;
@@ -894,7 +1432,7 @@ app.post("/api/auth/signup", async (req, res) => {
       });
     }
 
-    employee.password = newPassword;
+    employee.password = await bcrypt.hash(newPassword, 10);
     employee.isPasswordSet = true;
     employee.isFirstLogin = false;
     employee.isActivated = true;
@@ -919,7 +1457,20 @@ app.post("/api/auth/signup", async (req, res) => {
 // Get all employees
 app.get("/api/employees", async (req, res) => {
   try {
-    const employees = await Employee.find();
+    const includeArchived = String(req.query.includeArchived || "") === "true";
+    let employees = await Employee.find(
+      includeArchived ? {} : { isArchived: { $ne: true } },
+    );
+    const groupIds = collectGroupIdsFromEmployees(employees);
+    if (groupIds.size > 0) {
+      const ioInstance = req.app.get("io");
+      for (const groupId of groupIds) {
+        await normalizeGroupTaskData({ groupId, ioInstance });
+      }
+      employees = await Employee.find(
+        includeArchived ? {} : { isArchived: { $ne: true } },
+      );
+    }
     res.json(employees);
   } catch (err) {
     console.error(err);
@@ -930,6 +1481,82 @@ app.get("/api/employees", async (req, res) => {
       hasMongoUri: Boolean(process.env.MONGODB_URI),
     });
     res.status(500).json({ error: "Server error" });
+  }
+});
+
+// Update employee profile details without touching task history.
+app.patch("/api/employees/:email/profile", async (req, res) => {
+  try {
+    const currentEmail = String(req.params.email || "")
+      .trim()
+      .toLowerCase();
+    const nextEmail = String(req.body?.email || currentEmail)
+      .trim()
+      .toLowerCase();
+    const existing = await Employee.findOne({ email: currentEmail });
+    if (!existing) return res.status(404).json({ error: "Employee not found" });
+
+    if (nextEmail !== currentEmail) {
+      const duplicate = await Employee.findOne({ email: nextEmail });
+      if (duplicate) {
+        return res.status(409).json({ error: "Employee email already exists" });
+      }
+    }
+
+    existing.firstName = String(
+      req.body?.firstName || existing.firstName || "",
+    ).trim();
+    existing.lastName = String(
+      req.body?.lastName ?? existing.lastName ?? "",
+    ).trim();
+    existing.email = nextEmail;
+    existing.role = String(
+      req.body?.role || existing.role || "employee",
+    ).trim();
+    await existing.save();
+
+    const ioInstance = req.app.get("io");
+    ioInstance?.emit("employeeUpdated", {
+      email: existing.email,
+      employee: existing,
+    });
+
+    return res.json(existing);
+  } catch (err) {
+    console.error("Update employee profile error:", err);
+    return res.status(500).json({ error: "Server error" });
+  }
+});
+
+// Soft-delete employee access while preserving historical task/productivity data.
+app.delete("/api/employees/:email", async (req, res) => {
+  try {
+    const email = String(req.params.email || "")
+      .trim()
+      .toLowerCase();
+    const employee = await Employee.findOneAndUpdate(
+      { email },
+      {
+        $set: {
+          isArchived: true,
+          archivedAt: new Date(),
+          isActivated: false,
+        },
+      },
+      { new: true },
+    );
+    if (!employee) return res.status(404).json({ error: "Employee not found" });
+
+    const ioInstance = req.app.get("io");
+    ioInstance?.emit("employeeUpdated", { email, employee });
+    return res.json({
+      success: true,
+      employee,
+      message: "Employee archived. Historical task data is preserved.",
+    });
+  } catch (err) {
+    console.error("Archive employee error:", err);
+    return res.status(500).json({ error: "Server error" });
   }
 });
 
@@ -952,6 +1579,15 @@ app.get("/api/employees/:email", async (req, res) => {
           { new: true },
         );
       }
+
+      const groupIds = collectGroupIdsFromEmployees([emp]);
+      if (groupIds.size > 0) {
+        const ioInstance = req.app.get("io");
+        for (const groupId of groupIds) {
+          await normalizeGroupTaskData({ groupId, ioInstance });
+        }
+        emp = await Employee.findOne({ email: req.params.email });
+      }
       res.json(emp);
     } else {
       res.status(404).json({ error: "Employee not found" });
@@ -966,6 +1602,9 @@ app.get("/api/employees/:email", async (req, res) => {
 app.put("/api/employees/:email", async (req, res) => {
   try {
     const update = req.body;
+    const employeeEmail = String(req.params.email || "")
+      .trim()
+      .toLowerCase();
 
     // Get existing employee to detect new tasks
     const existingEmp = await Employee.findOne({ email: req.params.email });
@@ -978,6 +1617,9 @@ app.put("/api/employees/:email", async (req, res) => {
     );
     let changedTaskContext = null;
     let hadOutcomeTransition = false;
+    let completionBlocked = false;
+    let completionBlockReason = "";
+    const pendingChatMessages = [];
 
     // Preserve sensitive onboarding/auth fields when client sends partial updates.
     if (typeof update.password === "undefined") {
@@ -1118,6 +1760,41 @@ app.put("/api/employees/:email", async (req, res) => {
           const transitionedToOutcome =
             (!prevCompleted && nowCompleted) || (!prevFailed && nowFailed);
 
+          const wasActive = Boolean(previousTask?.active);
+          const becameActive = !wasActive && Boolean(task.active);
+          if (becameActive && !task.groupTask && task.chatEnabled) {
+            pendingChatMessages.push({
+              taskKey: buildTaskIdentityKey(task),
+              message: `${employeeEmail} accepted the task`,
+            });
+          }
+
+          const prevDeadline = previousTask?.taskDate
+            ? new Date(previousTask.taskDate).getTime()
+            : Number.NaN;
+          const nextDeadline = task.taskDate
+            ? new Date(task.taskDate).getTime()
+            : Number.NaN;
+          if (
+            Number.isFinite(prevDeadline) &&
+            Number.isFinite(nextDeadline) &&
+            nextDeadline > prevDeadline &&
+            isChatEnabledForTask(task)
+          ) {
+            pendingChatMessages.push({
+              taskKey: buildTaskIdentityKey(task),
+              message: "Task deadline extended by admin",
+            });
+          }
+
+          if (!prevCompleted && nowCompleted) {
+            if (!canMarkTaskComplete(task, employeeEmail)) {
+              completionBlocked = true;
+              completionBlockReason =
+                "Please complete all your assigned subtasks before marking task as complete";
+            }
+          }
+
           if (transitionedToOutcome) {
             hadOutcomeTransition = true;
             changedTaskContext = {
@@ -1166,6 +1843,41 @@ app.put("/api/employees/:email", async (req, res) => {
         const transitionedToOutcome =
           (!prevCompleted && nowCompleted) || (!prevFailed && nowFailed);
 
+        const wasActive = Boolean(previousTask?.active);
+        const becameActive = !wasActive && Boolean(task.active);
+        if (becameActive && !task.groupTask && task.chatEnabled) {
+          pendingChatMessages.push({
+            taskKey: buildTaskIdentityKey(task),
+            message: `${employeeEmail} accepted the task`,
+          });
+        }
+
+        const prevDeadline = previousTask?.taskDate
+          ? new Date(previousTask.taskDate).getTime()
+          : Number.NaN;
+        const nextDeadline = task.taskDate
+          ? new Date(task.taskDate).getTime()
+          : Number.NaN;
+        if (
+          Number.isFinite(prevDeadline) &&
+          Number.isFinite(nextDeadline) &&
+          nextDeadline > prevDeadline &&
+          isChatEnabledForTask(task)
+        ) {
+          pendingChatMessages.push({
+            taskKey: buildTaskIdentityKey(task),
+            message: "Task deadline extended by admin",
+          });
+        }
+
+        if (!prevCompleted && nowCompleted) {
+          if (!canMarkTaskComplete(task, employeeEmail)) {
+            completionBlocked = true;
+            completionBlockReason =
+              "Please complete all your assigned subtasks before marking task as complete";
+          }
+        }
+
         if (transitionedToOutcome) {
           hadOutcomeTransition = true;
           changedTaskContext = {
@@ -1177,6 +1889,10 @@ app.put("/api/employees/:email", async (req, res) => {
         }
         return task;
       });
+    }
+
+    if (completionBlocked) {
+      return res.status(400).json({ error: completionBlockReason });
     }
 
     if (hadOutcomeTransition) {
@@ -1218,6 +1934,26 @@ app.put("/api/employees/:email", async (req, res) => {
         });
       }
 
+      if (pendingChatMessages.length > 0) {
+        for (const entry of pendingChatMessages) {
+          const task = emp.tasks.find(
+            (candidate) => buildTaskIdentityKey(candidate) === entry.taskKey,
+          );
+          if (!task || !isChatOpenForTask(task)) continue;
+          const chatMessage = buildChatMessage({
+            senderName: "System",
+            message: entry.message,
+            type: "system",
+          });
+          await appendChatMessageForTask({
+            employee: emp,
+            task,
+            chatMessage,
+            ioInstance,
+          });
+        }
+      }
+
       res.json(emp);
     } else {
       res.status(404).json({ error: "Employee not found" });
@@ -1225,6 +1961,40 @@ app.put("/api/employees/:email", async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Server error" });
+  }
+});
+
+// Soft-delete a single task (admin action)
+app.post("/api/employees/:email/tasks/:taskId/delete", async (req, res) => {
+  try {
+    const email = String(req.params.email || "")
+      .trim()
+      .toLowerCase();
+    const taskId = String(req.params.taskId || "").trim();
+    const employee = await Employee.findOne({ email });
+    if (!employee) return res.status(404).json({ error: "Employee not found" });
+
+    const task = employee.tasks.id(taskId);
+    if (!task) return res.status(404).json({ error: "Task not found" });
+    if (task.groupTask && task.groupId) {
+      return res
+        .status(400)
+        .json({ error: "Use group task delete for shared tasks" });
+    }
+
+    task.isDeleted = true;
+    task.deletedAt = new Date();
+    employee.taskCounts = computeTaskCounts(employee.tasks);
+    await employee.save();
+
+    const ioInstance = req.app.get("io");
+    ioInstance?.emit("employeeUpdated", { email: employee.email, employee });
+    ioInstance?.emit("taskStatusChanged", { email: employee.email, employee });
+
+    return res.json({ success: true, employee });
+  } catch (err) {
+    console.error("Delete task error:", err);
+    return res.status(500).json({ error: "Server error" });
   }
 });
 
@@ -1281,6 +2051,10 @@ app.post("/api/employees/:email/tasks", async (req, res) => {
         email: emp.email,
         task: emp.tasks[emp.tasks.length - 1],
       });
+      ioInstance?.emit("employeeUpdated", {
+        email: emp.email,
+        employee: emp,
+      });
 
       res.status(201).json(emp);
 
@@ -1308,6 +2082,758 @@ app.post("/api/employees/:email/tasks", async (req, res) => {
   }
 });
 
+// Add a shared group task to multiple employees without changing single-task behavior.
+app.post("/api/group-tasks", async (req, res) => {
+  try {
+    const emails = Array.from(
+      new Set(
+        (Array.isArray(req.body?.emails) ? req.body.emails : [])
+          .map((email) =>
+            String(email || "")
+              .trim()
+              .toLowerCase(),
+          )
+          .filter(Boolean),
+      ),
+    );
+    if (emails.length < 2) {
+      return res
+        .status(400)
+        .json({ error: "At least two employee emails are required" });
+    }
+
+    const employees = await Employee.find({
+      email: { $in: emails },
+      isArchived: { $ne: true },
+    });
+    if (employees.length !== emails.length) {
+      return res
+        .status(404)
+        .json({ error: "One or more employees were not found" });
+    }
+
+    const now = new Date();
+    const groupId = `group-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const members = buildGroupMembers(employees);
+    const requestedEstimatedDuration = Number(req.body.estimatedDuration);
+    const hasManualEstimate =
+      Number.isFinite(requestedEstimatedDuration) &&
+      requestedEstimatedDuration > 0;
+    const baseTask = {
+      taskTitle: req.body.taskTitle,
+      taskDescription: req.body.taskDescription,
+      taskDate: req.body.taskDate,
+      category: req.body.category,
+      estimatedDuration: hasManualEstimate
+        ? normalizeEstimatedDurationMinutes(requestedEstimatedDuration, 60)
+        : 0,
+      acceptanceTimeLimitMinutes:
+        Number(req.body.acceptanceTimeLimitMinutes) || 0,
+      aiEstimationPending: !hasManualEstimate,
+      assignedAt: now,
+      createdAt: now,
+      newTask: true,
+      active: false,
+      completed: false,
+      failed: false,
+      notAccepted: false,
+      groupTask: true,
+      groupId,
+      groupMembers: members,
+      groupAcceptedEmails: [],
+      chatEnabled: true,
+      chatClosed: false,
+      aiPriority: "Medium",
+      aiPriorityReason: "Analyzing task priority and duration...",
+    };
+
+    if (baseTask.acceptanceTimeLimitMinutes > 0) {
+      baseTask.acceptanceDeadline = new Date(
+        now.getTime() + baseTask.acceptanceTimeLimitMinutes * 60 * 1000,
+      );
+    }
+
+    const updatedEmployees = [];
+    for (const employee of employees) {
+      employee.tasks.push({ ...baseTask });
+      employee.taskCounts = employee.taskCounts || {
+        active: 0,
+        newTask: 0,
+        completed: 0,
+        failed: 0,
+      };
+      employee.taskCounts.newTask += 1;
+      await employee.save();
+      updatedEmployees.push(employee);
+    }
+
+    const ioInstance = req.app.get("io");
+    updatedEmployees.forEach((employee) => {
+      ioInstance?.emit("taskCreated", {
+        email: employee.email,
+        task: employee.tasks[employee.tasks.length - 1],
+      });
+      ioInstance?.emit("employeeUpdated", {
+        email: employee.email,
+        employee,
+      });
+    });
+
+    enrichGroupTaskAiMetadataInBackground({
+      groupId,
+      baseTask,
+      hasManualEstimate,
+      ioInstance,
+    }).catch((err) => {
+      console.warn(
+        "Background group task priority/estimate enrichment failed:",
+        err.message,
+      );
+    });
+
+    return res.status(201).json({
+      success: true,
+      groupId,
+      employees: updatedEmployees,
+    });
+  } catch (err) {
+    console.error("Create group task error:", err);
+    return res.status(500).json({ error: "Server error" });
+  }
+});
+
+app.post("/api/group-tasks/:groupId/accept", async (req, res) => {
+  try {
+    const groupId = req.params.groupId;
+    const employeeEmail = String(req.body?.employeeEmail || "")
+      .trim()
+      .toLowerCase();
+    const now = new Date();
+    const employees = await Employee.find({ "tasks.groupId": groupId });
+    const existingAcceptedEmails = new Set(
+      employees.flatMap((employee) => {
+        const task = employee.tasks.find((item) => item.groupId === groupId);
+        return Array.isArray(task?.groupAcceptedEmails)
+          ? task.groupAcceptedEmails
+          : [];
+      }),
+    );
+    const isNewAcceptance = !existingAcceptedEmails.has(employeeEmail);
+    const acceptedEmails = Array.from(
+      new Set([...existingAcceptedEmails, employeeEmail]),
+    );
+
+    const updated = [];
+    for (const employee of employees) {
+      const task = employee.tasks.find((item) => item.groupId === groupId);
+      if (!task) continue;
+      task.groupAcceptedEmails = acceptedEmails;
+      task.groupMembers = (task.groupMembers || []).map((member) => ({
+        ...(member.toObject?.() || member),
+        accepted: acceptedEmails.includes(String(member.email).toLowerCase()),
+        acceptedAt:
+          acceptedEmails.includes(String(member.email).toLowerCase()) &&
+          String(member.email).toLowerCase() === employeeEmail
+            ? now
+            : member.acceptedAt,
+      }));
+      if (employee.email === employeeEmail) {
+        task.newTask = false;
+        task.active = true;
+        task.acceptedAt = now;
+        task.startedAt = task.startedAt || now;
+      }
+      employee.taskCounts = computeTaskCounts(employee.tasks);
+      await employee.save();
+      updated.push(employee);
+    }
+
+    const ioInstance = req.app.get("io");
+    updated.forEach((employee) => {
+      ioInstance?.emit("employeeUpdated", { email: employee.email, employee });
+      ioInstance?.emit("taskStatusChanged", {
+        email: employee.email,
+        employee,
+      });
+    });
+
+    if (isNewAcceptance) {
+      const systemMessage = buildChatMessage({
+        senderName: "System",
+        message: `${employeeEmail} accepted the task`,
+        type: "system",
+      });
+      await appendChatMessageForGroup({
+        groupId,
+        chatMessage: systemMessage,
+        ioInstance,
+      });
+    }
+
+    await normalizeGroupTaskData({ groupId, ioInstance });
+
+    return res.json({ success: true, acceptedEmails, employees: updated });
+  } catch (err) {
+    console.error("Accept group task error:", err);
+    return res.status(500).json({ error: "Server error" });
+  }
+});
+
+app.post(
+  "/api/group-tasks/:groupId/subtasks/:index/toggle",
+  async (req, res) => {
+    try {
+      const groupId = req.params.groupId;
+      const index = Number(req.params.index);
+      const employeeEmail = String(req.body?.employeeEmail || "")
+        .trim()
+        .toLowerCase();
+      const employees = await Employee.find({ "tasks.groupId": groupId });
+      const employee = employees.find(
+        (candidate) =>
+          String(candidate.email || "")
+            .trim()
+            .toLowerCase() === employeeEmail,
+      );
+      const employeeTask = employee?.tasks?.find(
+        (task) => task.groupId === groupId,
+      );
+      if (!employeeTask) {
+        return res.status(404).json({ error: "Employee task not found" });
+      }
+      if (employeeTask.completed) {
+        return res.status(409).json({ error: "Task is already completed" });
+      }
+      const sourceTask =
+        employees
+          .flatMap((employee) => employee.tasks || [])
+          .find(
+            (task) =>
+              task.groupId === groupId &&
+              Array.isArray(task.groupStepAssignments) &&
+              task.groupStepAssignments.length > 0,
+          ) ||
+        employees
+          .flatMap((employee) => employee.tasks || [])
+          .find((task) => task.groupId === groupId);
+      const assignments = Array.isArray(sourceTask?.groupStepAssignments)
+        ? sourceTask.groupStepAssignments.map(
+            (item) => item.toObject?.() || item,
+          )
+        : [];
+      const target = assignments[index];
+      if (!target) return res.status(404).json({ error: "Subtask not found" });
+      if (String(target.assignedEmail || "").toLowerCase() !== employeeEmail) {
+        return res.status(403).json({
+          error: "Only the assigned employee can update this subtask",
+        });
+      }
+
+      const isCompleting = !target.completed;
+      assignments[index] = {
+        ...target,
+        completed: isCompleting,
+        completedBy: isCompleting ? employeeEmail : null,
+        completedAt: isCompleting ? new Date() : null,
+      };
+
+      const updated = [];
+      for (const employee of employees) {
+        const task = employee.tasks.find((item) => item.groupId === groupId);
+        if (!task) continue;
+        task.groupStepAssignments = assignments;
+        await employee.save();
+        updated.push(employee);
+      }
+
+      const ioInstance = req.app.get("io");
+      updated.forEach((employee) =>
+        ioInstance?.emit("employeeUpdated", {
+          email: employee.email,
+          employee,
+        }),
+      );
+      if (isCompleting) {
+        const systemMessage = buildChatMessage({
+          senderName: "System",
+          message: `${employeeEmail} completed a subtask`,
+          type: "system",
+        });
+        await appendChatMessageForGroup({
+          groupId,
+          chatMessage: systemMessage,
+          ioInstance,
+        });
+      }
+      return res.json({ success: true, assignments, employees: updated });
+    } catch (err) {
+      console.error("Toggle group subtask error:", err);
+      return res.status(500).json({ error: "Server error" });
+    }
+  },
+);
+
+app.post(
+  "/api/employees/:email/tasks/:taskId/subtasks/:index/toggle",
+  async (req, res) => {
+    try {
+      const email = String(req.params.email || "")
+        .trim()
+        .toLowerCase();
+      const taskId = String(req.params.taskId || "").trim();
+      const index = Number(req.params.index);
+      const employee = await Employee.findOne({ email });
+      if (!employee) {
+        return res.status(404).json({ error: "Employee not found" });
+      }
+
+      const task = employee.tasks.id(taskId);
+      if (!task) return res.status(404).json({ error: "Task not found" });
+      if (task.groupTask && task.groupId) {
+        return res
+          .status(400)
+          .json({ error: "Use group task subtask endpoint" });
+      }
+      if (task.completed) {
+        return res.status(409).json({ error: "Task is already completed" });
+      }
+
+      const steps = Array.isArray(task.explainSteps) ? task.explainSteps : [];
+      if (!steps.length) {
+        return res
+          .status(400)
+          .json({ error: "No subtasks available for this task" });
+      }
+      if (!Number.isInteger(index) || index < 0 || index >= steps.length) {
+        return res.status(404).json({ error: "Subtask not found" });
+      }
+
+      const currentChecks = Array.isArray(task.explainStepChecks)
+        ? task.explainStepChecks
+        : [];
+      const normalizedChecks = steps.map((_, idx) =>
+        Boolean(currentChecks[idx]),
+      );
+      const isCompleting = !normalizedChecks[index];
+      normalizedChecks[index] = isCompleting;
+      task.explainStepChecks = normalizedChecks;
+      await employee.save();
+
+      const ioInstance = req.app.get("io");
+      ioInstance?.emit("employeeUpdated", { email: employee.email, employee });
+      ioInstance?.emit("taskStatusChanged", {
+        email: employee.email,
+        employee,
+      });
+      if (isCompleting) {
+        const systemMessage = buildChatMessage({
+          senderName: "System",
+          message: `${email} completed a subtask`,
+          type: "system",
+        });
+        await appendChatMessageForTask({
+          employee,
+          task,
+          chatMessage: systemMessage,
+          ioInstance,
+        });
+      }
+
+      return res.json({
+        success: true,
+        stepChecks: normalizedChecks,
+        task,
+      });
+    } catch (err) {
+      console.error("Toggle subtask error:", err);
+      return res.status(500).json({ error: "Server error" });
+    }
+  },
+);
+
+app.get("/api/employees/:email/tasks/:taskId/chat", async (req, res) => {
+  try {
+    const email = String(req.params.email || "")
+      .trim()
+      .toLowerCase();
+    const taskId = String(req.params.taskId || "").trim();
+    const employee = await Employee.findOne({ email });
+    if (!employee) {
+      return res.status(404).json({ error: "Employee not found" });
+    }
+    const task = employee.tasks.id(taskId);
+    if (!task) return res.status(404).json({ error: "Task not found" });
+    return res.json({
+      taskId,
+      chatEnabled: isChatEnabledForTask(task),
+      chatClosed: Boolean(task.chatClosed),
+      messages: Array.isArray(task.chatMessages) ? task.chatMessages : [],
+    });
+  } catch (err) {
+    console.error("Load task chat error:", err);
+    return res.status(500).json({ error: "Server error" });
+  }
+});
+
+app.post(
+  "/api/employees/:email/tasks/:taskId/chat/messages",
+  async (req, res) => {
+    try {
+      const email = String(req.params.email || "")
+        .trim()
+        .toLowerCase();
+      const taskId = String(req.params.taskId || "").trim();
+      const messageText = String(req.body?.message || "").trim();
+      if (!messageText) {
+        return res.status(400).json({ error: "Message is required" });
+      }
+      const employee = await Employee.findOne({ email });
+      if (!employee) {
+        return res.status(404).json({ error: "Employee not found" });
+      }
+      const task = employee.tasks.id(taskId);
+      if (!task) return res.status(404).json({ error: "Task not found" });
+      if (!isChatEnabledForTask(task)) {
+        return res.status(403).json({ error: "Chat is not enabled" });
+      }
+      if (!isChatOpenForTask(task)) {
+        return res.status(409).json({ error: "Chat is closed" });
+      }
+      const messageType = req.body?.type === "assistant" ? "assistant" : "user";
+      const chatMessage = buildChatMessage({
+        senderName: req.body?.senderName || "Member",
+        senderEmail: req.body?.senderEmail,
+        senderRole: req.body?.senderRole,
+        message: messageText,
+        type: messageType,
+      });
+      const ioInstance = req.app.get("io");
+      await appendChatMessageForTask({
+        employee,
+        task,
+        chatMessage,
+        ioInstance,
+      });
+      return res.json({ success: true, message: chatMessage });
+    } catch (err) {
+      console.error("Post task chat message error:", err);
+      return res.status(500).json({ error: "Server error" });
+    }
+  },
+);
+
+app.post(
+  "/api/employees/:email/tasks/:taskId/chat/enable",
+  async (req, res) => {
+    try {
+      const email = String(req.params.email || "")
+        .trim()
+        .toLowerCase();
+      const taskId = String(req.params.taskId || "").trim();
+      const employee = await Employee.findOne({ email });
+      if (!employee) {
+        return res.status(404).json({ error: "Employee not found" });
+      }
+      const task = employee.tasks.id(taskId);
+      if (!task) return res.status(404).json({ error: "Task not found" });
+      if (task.groupTask && task.groupId) {
+        return res
+          .status(400)
+          .json({ error: "Group tasks already have chat enabled" });
+      }
+      task.chatEnabled = true;
+      await employee.save();
+      const ioInstance = req.app.get("io");
+      ioInstance?.emit("taskChatEnabled", { taskId, email });
+      ioInstance?.emit("employeeUpdated", { email, employee });
+      return res.json({ success: true, task });
+    } catch (err) {
+      console.error("Enable task chat error:", err);
+      return res.status(500).json({ error: "Server error" });
+    }
+  },
+);
+
+app.post("/api/employees/:email/tasks/:taskId/chat/close", async (req, res) => {
+  try {
+    const email = String(req.params.email || "")
+      .trim()
+      .toLowerCase();
+    const taskId = String(req.params.taskId || "").trim();
+    const employee = await Employee.findOne({ email });
+    if (!employee) {
+      return res.status(404).json({ error: "Employee not found" });
+    }
+    const task = employee.tasks.id(taskId);
+    if (!task) return res.status(404).json({ error: "Task not found" });
+    task.chatClosed = true;
+    await employee.save();
+    const ioInstance = req.app.get("io");
+    ioInstance?.emit("taskChatClosed", { taskId, email });
+    ioInstance?.emit("employeeUpdated", { email, employee });
+    return res.json({ success: true, taskId });
+  } catch (err) {
+    console.error("Close task chat error:", err);
+    return res.status(500).json({ error: "Server error" });
+  }
+});
+
+app.get("/api/group-tasks/:groupId/chat", async (req, res) => {
+  try {
+    const groupId = req.params.groupId;
+    const employees = await Employee.find({ "tasks.groupId": groupId });
+    if (!employees.length) {
+      return res.status(404).json({ error: "Group task not found" });
+    }
+    const task = employees
+      .flatMap((employee) => employee.tasks || [])
+      .find((item) => item.groupId === groupId);
+    if (!task) {
+      return res.status(404).json({ error: "Group task not found" });
+    }
+    return res.json({
+      groupId,
+      chatClosed: Boolean(task.chatClosed),
+      chatEnabled: true,
+      messages: Array.isArray(task.chatMessages) ? task.chatMessages : [],
+    });
+  } catch (err) {
+    console.error("Load group chat error:", err);
+    return res.status(500).json({ error: "Server error" });
+  }
+});
+
+app.post("/api/group-tasks/:groupId/chat/messages", async (req, res) => {
+  try {
+    const groupId = req.params.groupId;
+    const messageText = String(req.body?.message || "").trim();
+    if (!messageText) {
+      return res.status(400).json({ error: "Message is required" });
+    }
+    const messageType = req.body?.type === "assistant" ? "assistant" : "user";
+    const chatMessage = buildChatMessage({
+      senderName: req.body?.senderName || "Member",
+      senderEmail: req.body?.senderEmail,
+      senderRole: req.body?.senderRole,
+      message: messageText,
+      type: messageType,
+    });
+    const ioInstance = req.app.get("io");
+    const updated = await appendChatMessageForGroup({
+      groupId,
+      chatMessage,
+      ioInstance,
+    });
+    if (!updated.length) {
+      return res.status(409).json({ error: "Chat is closed" });
+    }
+    return res.json({ success: true, message: chatMessage });
+  } catch (err) {
+    console.error("Post group chat message error:", err);
+    return res.status(500).json({ error: "Server error" });
+  }
+});
+
+app.post("/api/group-tasks/:groupId/chat/close", async (req, res) => {
+  try {
+    const groupId = req.params.groupId;
+    const employees = await Employee.find({ "tasks.groupId": groupId });
+    if (!employees.length) {
+      return res.status(404).json({ error: "Group task not found" });
+    }
+    const updated = [];
+    for (const employee of employees) {
+      const task = employee.tasks.find((item) => item.groupId === groupId);
+      if (!task) continue;
+      task.chatClosed = true;
+      await employee.save();
+      updated.push(employee);
+    }
+    const ioInstance = req.app.get("io");
+    ioInstance?.emit("taskChatClosed", { groupId });
+    updated.forEach((employee) =>
+      ioInstance?.emit("employeeUpdated", {
+        email: employee.email,
+        employee,
+      }),
+    );
+    return res.json({ success: true, groupId });
+  } catch (err) {
+    console.error("Close group chat error:", err);
+    return res.status(500).json({ error: "Server error" });
+  }
+});
+
+app.post("/api/employees/:email/tasks/:taskId/extend", async (req, res) => {
+  try {
+    const email = String(req.params.email || "")
+      .trim()
+      .toLowerCase();
+    const taskId = String(req.params.taskId || "").trim();
+    const days = Number(req.body?.days || 0);
+    if (!Number.isFinite(days) || days <= 0) {
+      return res.status(400).json({ error: "Days must be greater than 0" });
+    }
+    const employee = await Employee.findOne({ email });
+    if (!employee) {
+      return res.status(404).json({ error: "Employee not found" });
+    }
+    const task = employee.tasks.id(taskId);
+    if (!task) return res.status(404).json({ error: "Task not found" });
+
+    const addedMinutes = Math.round(days * 24 * 60);
+    task.estimatedDuration = Math.max(
+      0,
+      Number(task.estimatedDuration || 0) + addedMinutes,
+    );
+    const nextDate = addDaysToTaskDate(task.taskDate, days);
+    if (nextDate) {
+      task.taskDate = nextDate.toISOString().slice(0, 10);
+    }
+
+    await employee.save();
+    const ioInstance = req.app.get("io");
+    ioInstance?.emit("employeeUpdated", { email: employee.email, employee });
+    ioInstance?.emit("taskStatusChanged", {
+      email: employee.email,
+      employee,
+    });
+
+    const systemMessage = buildChatMessage({
+      senderName: "System",
+      message: "Deadline extended by admin",
+      type: "system",
+    });
+    await appendChatMessageForTask({
+      employee,
+      task,
+      chatMessage: systemMessage,
+      ioInstance,
+    });
+
+    return res.json({ success: true, task });
+  } catch (err) {
+    console.error("Extend task error:", err);
+    return res.status(500).json({ error: "Server error" });
+  }
+});
+
+app.post("/api/group-tasks/:groupId/extend", async (req, res) => {
+  try {
+    const groupId = req.params.groupId;
+    const days = Number(req.body?.days || 0);
+    const memberEmail = String(req.body?.memberEmail || "")
+      .trim()
+      .toLowerCase();
+    if (!Number.isFinite(days) || days <= 0) {
+      return res.status(400).json({ error: "Days must be greater than 0" });
+    }
+    const employees = await Employee.find({ "tasks.groupId": groupId });
+    if (!employees.length) {
+      return res.status(404).json({ error: "Group task not found" });
+    }
+    const addedMinutes = Math.round(days * 24 * 60);
+    const updated = [];
+
+    for (const employee of employees) {
+      const task = employee.tasks.find((item) => item.groupId === groupId);
+      if (!task) continue;
+
+      if (!memberEmail) {
+        task.estimatedDuration = Math.max(
+          0,
+          Number(task.estimatedDuration || 0) + addedMinutes,
+        );
+        const nextDate = addDaysToTaskDate(task.taskDate, days);
+        if (nextDate) {
+          task.taskDate = nextDate.toISOString().slice(0, 10);
+        }
+      }
+
+      if (Array.isArray(task.groupMemberEstimates)) {
+        task.groupMemberEstimates = task.groupMemberEstimates.map((entry) => {
+          if (
+            memberEmail &&
+            String(entry?.email || "").toLowerCase() !== memberEmail
+          ) {
+            return entry;
+          }
+          const nextEstimate = Math.max(
+            0,
+            Number(entry?.estimatedMinutes || 0) + addedMinutes,
+          );
+          return { ...entry, estimatedMinutes: nextEstimate };
+        });
+      }
+
+      await employee.save();
+      updated.push(employee);
+    }
+
+    const ioInstance = req.app.get("io");
+    updated.forEach((employee) =>
+      ioInstance?.emit("employeeUpdated", {
+        email: employee.email,
+        employee,
+      }),
+    );
+    ioInstance?.emit("taskStatusChanged", { groupId });
+
+    const systemMessage = buildChatMessage({
+      senderName: "System",
+      message: "Deadline extended by admin",
+      type: "system",
+    });
+    await appendChatMessageForGroup({
+      groupId,
+      chatMessage: systemMessage,
+      ioInstance,
+    });
+
+    return res.json({ success: true, groupId });
+  } catch (err) {
+    console.error("Extend group task error:", err);
+    return res.status(500).json({ error: "Server error" });
+  }
+});
+
+// Soft-delete a group task across all members (admin action)
+app.post("/api/group-tasks/:groupId/delete", async (req, res) => {
+  try {
+    const groupId = req.params.groupId;
+    const employees = await Employee.find({ "tasks.groupId": groupId });
+    if (!employees.length) {
+      return res.status(404).json({ error: "Group task not found" });
+    }
+
+    const now = new Date();
+    const updated = [];
+    for (const employee of employees) {
+      const task = employee.tasks.find((item) => item.groupId === groupId);
+      if (!task) continue;
+      task.isDeleted = true;
+      task.deletedAt = now;
+      employee.taskCounts = computeTaskCounts(employee.tasks);
+      await employee.save();
+      updated.push(employee);
+    }
+
+    const ioInstance = req.app.get("io");
+    updated.forEach((employee) => {
+      ioInstance?.emit("employeeUpdated", { email: employee.email, employee });
+      ioInstance?.emit("taskStatusChanged", {
+        email: employee.email,
+        employee,
+      });
+    });
+
+    return res.json({ success: true, groupId, employees: updated });
+  } catch (err) {
+    console.error("Delete group task error:", err);
+    return res.status(500).json({ error: "Server error" });
+  }
+});
+
 // Gemini / AI endpoints
 app.use("/api/gemini", geminiRouter);
 
@@ -1318,8 +2844,9 @@ app.use("/api/productivity", productivityRouter);
 app.post("/api/admin/login", async (req, res) => {
   try {
     const { email, password } = req.body;
-    const found = await Admin.findOne({ email, password });
-    if (found) {
+    const found = await Admin.findOne({ email });
+    if (found && (await verifyPassword(found.password, password))) {
+      await upgradePasswordIfNeeded(found, password);
       res.json({ success: true });
     } else {
       res.status(401).json({ error: "Invalid credentials" });

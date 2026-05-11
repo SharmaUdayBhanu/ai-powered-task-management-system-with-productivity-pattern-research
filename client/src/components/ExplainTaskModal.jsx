@@ -1,4 +1,7 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import axios from "axios";
+import API_URL from "../lib/apiClient";
+import DataSourceBadge from "./DataSourceBadge";
 
 const ExplainTaskModal = ({
   isOpen,
@@ -7,7 +10,11 @@ const ExplainTaskModal = ({
   loading,
   error,
   taskKey,
+  taskId,
   theme = "dark",
+  employeeEmail,
+  groupId,
+  taskCompleted,
 }) => {
   // Prevent body scroll when modal is open
   useEffect(() => {
@@ -30,22 +37,89 @@ const ExplainTaskModal = ({
     ? "text-gray-400 hover:text-gray-200"
     : "text-gray-500 hover:text-gray-800";
   const checklistStorageKey = `modal-ai-checklist:${taskKey || "unknown"}`;
+  const isReadOnly = Boolean(taskCompleted);
+  const [assignmentState, setAssignmentState] = useState([]);
+  const [subtaskPending, setSubtaskPending] = useState({});
+  const [subtaskErrors, setSubtaskErrors] = useState({});
+  const lastSubtaskClickRef = useRef({});
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const assignments = Array.isArray(explanation?.stepAssignments)
+      ? explanation.stepAssignments
+      : [];
+    setAssignmentState(assignments);
+  }, [explanation?.stepAssignments, isOpen]);
 
   const checklistItems = useMemo(() => {
+    const assignments =
+      Array.isArray(assignmentState) && assignmentState.length > 0
+        ? assignmentState
+        : Array.isArray(explanation?.stepAssignments)
+          ? explanation.stepAssignments
+          : [];
+    const buildChecklistId = (text, idx) =>
+      `${idx}-${String(text || "")
+        .toLowerCase()
+        .replace(/\s+/g, "-")
+        .slice(0, 48)}`;
+
+    if (assignments.length > 0) {
+      return assignments.map((assignment, idx) => ({
+        id: buildChecklistId(assignment.step, idx),
+        text: assignment.step,
+        assignedEmail: assignment.assignedEmail,
+        assignedName: assignment.assignedName,
+        completed: Boolean(assignment.completed),
+        groupIndex: idx,
+      }));
+    }
+
     const steps = Array.isArray(explanation?.steps)
       ? explanation.steps
           .map((step) => String(step || "").trim())
           .filter(Boolean)
       : [];
     return steps.map((text, idx) => ({
-      id: `${idx}-${text.toLowerCase().replace(/\s+/g, "-").slice(0, 48)}`,
+      id: buildChecklistId(text, idx),
       text,
+      stepIndex: idx,
     }));
-  }, [explanation?.steps]);
+  }, [assignmentState, explanation?.steps, explanation?.stepAssignments]);
 
   const [checkedMap, setCheckedMap] = useState({});
+  const stepChecks = Array.isArray(explanation?.stepChecks)
+    ? explanation.stepChecks
+    : [];
 
   useEffect(() => {
+    if (!isOpen) return;
+    if (groupId) {
+      setCheckedMap({});
+      return;
+    }
+
+    const mapFromServer = {};
+    if (stepChecks.length > 0) {
+      checklistItems.forEach((item) => {
+        if (item.stepIndex === undefined) return;
+        mapFromServer[item.id] = Boolean(stepChecks[item.stepIndex]);
+      });
+    }
+
+    if (Object.keys(mapFromServer).length > 0) {
+      setCheckedMap(mapFromServer);
+      try {
+        localStorage.setItem(
+          checklistStorageKey,
+          JSON.stringify(mapFromServer),
+        );
+      } catch {
+        // ignore storage failures
+      }
+      return;
+    }
+
     try {
       const parsed = JSON.parse(
         localStorage.getItem(checklistStorageKey) || "{}",
@@ -54,26 +128,126 @@ const ExplainTaskModal = ({
     } catch {
       setCheckedMap({});
     }
-  }, [checklistStorageKey, taskKey, isOpen]);
+  }, [
+    checklistStorageKey,
+    taskKey,
+    isOpen,
+    groupId,
+    stepChecks,
+    checklistItems,
+  ]);
 
-  const toggleChecklistItem = (itemId) => {
-    setCheckedMap((prev) => {
-      const next = {
-        ...prev,
-        [itemId]: !prev?.[itemId],
-      };
+  const toggleChecklistItem = async (itemId) => {
+    const item = checklistItems.find((candidate) => candidate.id === itemId);
+    if (!item || isReadOnly) return;
+    if (subtaskPending[item.id]) return;
+    const lastClick = lastSubtaskClickRef.current[item.id] || 0;
+    const now = Date.now();
+    if (now - lastClick < 400) return;
+    lastSubtaskClickRef.current[item.id] = now;
+    setSubtaskPending((prev) => ({ ...prev, [item.id]: true }));
+    setSubtaskErrors((prev) => ({ ...prev, [item.id]: "" }));
+
+    if (groupId) {
+      if (
+        String(item.assignedEmail || "").toLowerCase() !==
+        String(employeeEmail || "").toLowerCase()
+      ) {
+        return;
+      }
+      if (item.groupIndex === undefined) return;
+      const previousAssignments = Array.isArray(assignmentState)
+        ? assignmentState
+        : [];
+      setAssignmentState((prev) =>
+        prev.map((assignment, idx) => {
+          if (idx !== item.groupIndex) return assignment;
+          const nextCompleted = !assignment.completed;
+          return {
+            ...assignment,
+            completed: nextCompleted,
+            completedBy: nextCompleted ? employeeEmail : null,
+            completedAt: nextCompleted ? new Date().toISOString() : null,
+          };
+        }),
+      );
       try {
-        localStorage.setItem(checklistStorageKey, JSON.stringify(next));
+        const response = await axios.post(
+          `${API_URL}/group-tasks/${groupId}/subtasks/${item.groupIndex}/toggle`,
+          { employeeEmail },
+        );
+        if (Array.isArray(response.data?.assignments)) {
+          setAssignmentState(response.data.assignments);
+        }
+      } catch {
+        setAssignmentState(previousAssignments);
+        setSubtaskErrors((prev) => ({
+          ...prev,
+          [item.id]: "Unable to update. Please retry.",
+        }));
+      } finally {
+        setSubtaskPending((prev) => ({ ...prev, [item.id]: false }));
+      }
+      return;
+    }
+
+    if (item.stepIndex === undefined || !taskId) return;
+    const previousCheckedMap = { ...checkedMap };
+    const nextCheckedMap = {
+      ...checkedMap,
+      [item.id]: !checkedMap[item.id],
+    };
+    setCheckedMap(nextCheckedMap);
+    try {
+      localStorage.setItem(checklistStorageKey, JSON.stringify(nextCheckedMap));
+    } catch {
+      // ignore storage failures
+    }
+    try {
+      const response = await axios.post(
+        `${API_URL}/employees/${employeeEmail}/tasks/${taskId}/subtasks/${item.stepIndex}/toggle`,
+      );
+      const nextChecks = Array.isArray(response.data?.stepChecks)
+        ? response.data.stepChecks
+        : [];
+      if (nextChecks.length > 0) {
+        const nextMap = {};
+        checklistItems.forEach((candidate) => {
+          if (candidate.stepIndex === undefined) return;
+          nextMap[candidate.id] = Boolean(nextChecks[candidate.stepIndex]);
+        });
+        setCheckedMap(nextMap);
+        try {
+          localStorage.setItem(checklistStorageKey, JSON.stringify(nextMap));
+        } catch {
+          // ignore storage failures
+        }
+      }
+    } catch {
+      setCheckedMap(previousCheckedMap);
+      try {
+        localStorage.setItem(
+          checklistStorageKey,
+          JSON.stringify(previousCheckedMap),
+        );
       } catch {
         // ignore storage failures
       }
-      return next;
-    });
+      setSubtaskErrors((prev) => ({
+        ...prev,
+        [item.id]: "Unable to update. Please retry.",
+      }));
+    } finally {
+      setSubtaskPending((prev) => ({ ...prev, [item.id]: false }));
+    }
   };
 
-  const completedCount = checklistItems.filter(
-    (item) => checkedMap[item.id],
-  ).length;
+  const hasGroupAssignments =
+    Boolean(groupId) &&
+    checklistItems.some((item) => item.groupIndex !== undefined);
+  const completedCount = hasGroupAssignments
+    ? checklistItems.filter((item) => item.completed).length
+    : checklistItems.filter((item) => checkedMap[item.id]).length;
 
   if (!isOpen) return null;
 
@@ -189,6 +363,12 @@ const ExplainTaskModal = ({
               >
                 <h3 className={`font-semibold text-sm mb-2 ${textClass}`}>
                   Summary:
+                  <DataSourceBadge
+                    source={
+                      explanation.source ||
+                      (explanation.fromFallback ? "System" : "AI")
+                    }
+                  />
                 </h3>
                 <p className={`text-sm leading-relaxed ${textSecondaryClass}`}>
                   {explanation.summary}
@@ -212,36 +392,76 @@ const ExplainTaskModal = ({
                   <ul className="mt-3 space-y-2">
                     {checklistItems.map((item, idx) => (
                       <li key={item.id}>
-                        <label
-                          className={`flex cursor-pointer items-start gap-2 rounded-md border px-3 py-2 text-sm transition-colors ${
-                            isDark
-                              ? "border-gray-600 bg-gray-800/60 hover:bg-gray-800"
-                              : "border-gray-200 bg-white hover:bg-gray-100"
-                          }`}
-                        >
-                          <span
-                            className={`mt-0.5 rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${isDark ? "bg-gray-600 text-gray-200" : "bg-gray-200 text-gray-700"}`}
-                          >
-                            {idx + 1}
-                          </span>
-                          <input
-                            type="checkbox"
-                            checked={Boolean(checkedMap[item.id])}
-                            onChange={() => toggleChecklistItem(item.id)}
-                            className="mt-0.5 h-4 w-4 rounded"
-                          />
-                          <span
-                            className={`leading-relaxed ${
-                              checkedMap[item.id]
-                                ? isDark
-                                  ? "text-gray-400 line-through"
-                                  : "text-gray-500 line-through"
-                                : textSecondaryClass
-                            }`}
-                          >
-                            {item.text}
-                          </span>
-                        </label>
+                        {(() => {
+                          const assignedToCurrent =
+                            !groupId ||
+                            String(item.assignedEmail || "").toLowerCase() ===
+                              String(employeeEmail || "").toLowerCase();
+                          const isChecked = hasGroupAssignments
+                            ? Boolean(item.completed)
+                            : Boolean(checkedMap[item.id]);
+                          const isDisabled = !assignedToCurrent || isReadOnly;
+                          return (
+                            <label
+                              className={`flex items-start gap-2 rounded-md border px-3 py-2 text-sm transition-colors ${
+                                !isDisabled
+                                  ? "cursor-pointer"
+                                  : "cursor-not-allowed opacity-70"
+                              } ${
+                                isDark
+                                  ? "border-gray-600 bg-gray-800/60 hover:bg-gray-800"
+                                  : "border-gray-200 bg-white hover:bg-gray-100"
+                              }`}
+                            >
+                              <span
+                                className={`mt-0.5 rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${isDark ? "bg-gray-600 text-gray-200" : "bg-gray-200 text-gray-700"}`}
+                              >
+                                {idx + 1}
+                              </span>
+                              <input
+                                type="checkbox"
+                                checked={isChecked}
+                                onChange={() => toggleChecklistItem(item.id)}
+                                disabled={isDisabled || subtaskPending[item.id]}
+                                className="mt-0.5 h-4 w-4 rounded"
+                              />
+                              <span className="min-w-0">
+                                <span
+                                  className={`block leading-relaxed ${
+                                    isChecked
+                                      ? isDark
+                                        ? "text-gray-400 line-through"
+                                        : "text-gray-500 line-through"
+                                      : textSecondaryClass
+                                  }`}
+                                >
+                                  {item.text}
+                                </span>
+                                {item.assignedName && (
+                                  <span
+                                    className={`mt-1 block text-[11px] ${textSecondaryClass}`}
+                                  >
+                                    Assigned to {item.assignedName}
+                                  </span>
+                                )}
+                                {subtaskErrors[item.id] && (
+                                  <span
+                                    className={`mt-1 block text-[11px] ${isDark ? "text-red-400" : "text-red-600"}`}
+                                  >
+                                    {subtaskErrors[item.id]}
+                                  </span>
+                                )}
+                                {subtaskPending[item.id] && (
+                                  <span
+                                    className={`mt-1 block text-[11px] ${isDark ? "text-white/70" : "text-gray-500"}`}
+                                  >
+                                    Saving...
+                                  </span>
+                                )}
+                              </span>
+                            </label>
+                          );
+                        })()}
                       </li>
                     ))}
                   </ul>

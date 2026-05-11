@@ -18,7 +18,7 @@ const Header = ({ data, theme, showSectionNav = true }) => {
 
   const logOutuser = () => {
     localStorage.removeItem("loggedInUser");
-    window.location.reload();
+    window.dispatchEvent(new CustomEvent("auth:logout"));
   };
 
   const handleNavClick = (item) => {

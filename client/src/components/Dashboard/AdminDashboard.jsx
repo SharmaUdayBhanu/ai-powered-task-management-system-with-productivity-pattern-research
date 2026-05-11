@@ -5,25 +5,39 @@ import React, {
   useRef,
   useState,
 } from "react";
+import axios from "axios";
 import { io } from "socket.io-client";
 import Header from "../other/Header";
 import CreateTask from "../other/CreateTask";
+import EmployeeAutocomplete from "../EmployeeAutocomplete";
+import TaskChatDock from "../TaskChat/TaskChatDock";
 import {
   getWithRetry,
   postWithRetry,
   sanitizeApiError,
+  default as API_URL,
 } from "../../lib/apiClient";
 import {
   ENABLE_REALTIME,
   REALTIME_SOCKET_OPTIONS,
   REALTIME_SOCKET_URL,
 } from "../../lib/realtime";
+import ActionableInsightList from "../ActionableInsightList";
 
 const toPercent = (value, base) => {
   const safeBase = Number(base) || 0;
   if (safeBase <= 0) return 0;
   return Number(((Number(value) / safeBase) * 100).toFixed(1));
 };
+
+const formatSyncTime = (date) =>
+  date
+    ? date.toLocaleTimeString("en-US", {
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: true,
+      })
+    : "Syncing...";
 
 const getTrendMeta = (stats = {}) => {
   const backendLabel = String(stats?.trendLabel || "").trim();
@@ -147,6 +161,115 @@ const deriveCardSignalFallback = (stats = {}) => {
   };
 };
 
+const getWorkloadStatus = ({ employee = {}, ranking = {}, stats = {} }) => {
+  const activeCount =
+    Number(stats.activeTaskCount) || Number(employee.taskCounts?.active) || 0;
+  const pendingCount = Number(employee.taskCounts?.newTask) || 0;
+  const workloadCount = activeCount + pendingCount;
+  const completed = Number(stats.completedTaskCount) || 0;
+  const failed = Number(stats.failedTaskCount) || 0;
+  const totalOutcomes = completed + failed;
+  const completionRate =
+    Number(stats.outcomeCompletionRate) || toPercent(completed, totalOutcomes);
+  const productivityScore =
+    Number(ranking?.productivityScore) || Number(stats.productivityScore) || 0;
+  const hasOutcomeHistory = totalOutcomes > 0;
+  const struggling =
+    hasOutcomeHistory &&
+    (completionRate < 60 || failed > completed * 0.5 || productivityScore < 4);
+  const capable =
+    productivityScore >= 5 ||
+    completionRate >= 70 ||
+    completed >= Math.max(3, failed * 2);
+
+  if (
+    workloadCount >= 8 ||
+    (workloadCount >= 6 &&
+      (struggling || (hasOutcomeHistory && completionRate < 75)))
+  ) {
+    return {
+      label: "Overloaded",
+      detail: `${workloadCount} active/new tasks with ${completionRate}% completion`,
+      className: "bg-red-500/20 text-red-300 border-red-400/30",
+    };
+  }
+
+  if (workloadCount <= 1 && capable) {
+    return {
+      label: "Underutilized",
+      detail: `${workloadCount} active/new tasks with capacity to take more`,
+      className: "bg-sky-500/20 text-sky-300 border-sky-400/30",
+    };
+  }
+
+  return {
+    label: "Balanced",
+    detail: `${workloadCount} active/new tasks with steady delivery`,
+    className: "bg-emerald-500/20 text-emerald-300 border-emerald-400/30",
+  };
+};
+
+const parseDurationMinutes = (value) => {
+  const text = String(value || "")
+    .toLowerCase()
+    .trim();
+  if (!text) return 0;
+
+  const rangeMatch = text.match(
+    /(\d+(?:\.\d+)?)\s*(?:-|to|–)\s*(\d+(?:\.\d+)?)/,
+  );
+  if (rangeMatch) {
+    const first = Number(rangeMatch[1]);
+    const second = Number(rangeMatch[2]);
+    if (!Number.isNaN(first) && !Number.isNaN(second)) {
+      const average = (first + second) / 2;
+      const isHours = /(hour|hours|hr|hrs)\b/.test(text);
+      return Math.max(1, Math.round(isHours ? average * 60 : average));
+    }
+  }
+
+  const hoursMatch = text.match(/(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours)\b/);
+  if (hoursMatch) {
+    const num = Number(hoursMatch[1]);
+    return Number.isNaN(num) ? 0 : Math.max(1, Math.round(num * 60));
+  }
+
+  const minutesMatch = text.match(
+    /(\d+(?:\.\d+)?)\s*(?:m|min|mins|minute|minutes)\b/,
+  );
+  if (minutesMatch) {
+    const num = Number(minutesMatch[1]);
+    return Number.isNaN(num) ? 0 : Math.max(1, Math.round(num));
+  }
+
+  const numericOnly = text.match(/\d+(?:\.\d+)?/);
+  if (numericOnly) {
+    const num = Number(numericOnly[0]);
+    return Number.isNaN(num) ? 0 : Math.max(1, Math.round(num));
+  }
+
+  return 0;
+};
+
+const getTaskStartMs = (task = {}) => {
+  const source =
+    task.startedAt || task.acceptedAt || task.assignedAt || task.createdAt;
+  const parsed = new Date(source || 0).getTime();
+  return Number.isNaN(parsed) ? null : parsed;
+};
+
+const formatRemainingTime = (remainingMs) => {
+  if (remainingMs === null || remainingMs === undefined) {
+    return "Not enough data";
+  }
+  const totalMinutes = Math.ceil(Math.abs(remainingMs) / 60000);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  const label = hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+  if (remainingMs < 0) return `Overdue by ${label}`;
+  return `${label} left`;
+};
+
 const AdminDashboard = () => {
   const [theme, setTheme] = useState("dark");
   const [employees, setEmployees] = useState([]);
@@ -176,6 +299,23 @@ const AdminDashboard = () => {
     email: "",
     role: "employee",
   });
+  const [employeeSearch, setEmployeeSearch] = useState("");
+  const [editingEmployeeEmail, setEditingEmployeeEmail] = useState("");
+  const [employeeActionError, setEmployeeActionError] = useState("");
+  const [employeeActionSuccess, setEmployeeActionSuccess] = useState("");
+  const [editEmployeeForm, setEditEmployeeForm] = useState({
+    firstName: "",
+    lastName: "",
+    email: "",
+    role: "",
+  });
+  const deleteInFlightRef = useRef(false);
+  const [optimisticDeletedTaskIds, setOptimisticDeletedTaskIds] = useState(
+    () => new Set(),
+  );
+  const [optimisticDeletedGroupIds, setOptimisticDeletedGroupIds] = useState(
+    () => new Set(),
+  );
 
   const fetchDashboardData = useCallback(async ({ includeAI = false } = {}) => {
     const [employeeRes, rankingRes] = await Promise.allSettled([
@@ -298,18 +438,42 @@ const AdminDashboard = () => {
     }
 
     const socket = io(REALTIME_SOCKET_URL, REALTIME_SOCKET_OPTIONS);
-    const triggerRefresh = () => {
-      fetchDashboardData({ includeAI: false });
-      scheduleAiRefresh();
-    };
 
-    socket.on("employeeUpdated", triggerRefresh);
-    socket.on("taskCreated", triggerRefresh);
-    socket.on("taskStatusChanged", triggerRefresh);
-    socket.on("taskActionCompleted", triggerRefresh);
+    socket.on("employeeUpdated", ({ email, employee }) => {
+      if (!employee) return;
+      setEmployees((prev) => {
+        const next = prev.map((row) => (row.email === email ? employee : row));
+        return next;
+      });
+    });
+
+    socket.on("taskCreated", ({ email, task }) => {
+      if (!email || !task) return;
+      setEmployees((prev) =>
+        prev.map((row) =>
+          row.email === email
+            ? { ...row, tasks: [...(row.tasks || []), task] }
+            : row,
+        ),
+      );
+    });
+
+    socket.on("taskStatusChanged", ({ email, employee }) => {
+      if (!employee || !email) return;
+      setEmployees((prev) =>
+        prev.map((row) => (row.email === email ? employee : row)),
+      );
+    });
+
+    socket.on("taskActionCompleted", ({ email, employee }) => {
+      if (!employee || !email) return;
+      setEmployees((prev) =>
+        prev.map((row) => (row.email === email ? employee : row)),
+      );
+    });
 
     return () => socket.disconnect();
-  }, [fetchDashboardData, scheduleAiRefresh]);
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -355,6 +519,11 @@ const AdminDashboard = () => {
         });
 
       const cardFallback = deriveCardSignalFallback(stats);
+      const workloadStatus = getWorkloadStatus({
+        employee,
+        ranking,
+        stats,
+      });
 
       return {
         ...employee,
@@ -369,6 +538,7 @@ const AdminDashboard = () => {
           0,
         newCount: Number(employee.taskCounts?.newTask) || 0,
         trendMeta: getTrendMeta(stats),
+        workloadStatus,
         strengthTags: deriveStrengthTags({ ranking }),
         cardSignalFallback: cardFallback,
       };
@@ -415,6 +585,18 @@ const AdminDashboard = () => {
         .filter(([email]) => Boolean(email)),
     );
   }, [leaderboardData.aiInsights]);
+
+  const chatTasks = useMemo(() => {
+    return employees.flatMap((employee) =>
+      (employee.tasks || []).map((task) => ({
+        ...task,
+        ownerEmail: employee.email,
+        ownerName: [employee.firstName, employee.lastName]
+          .filter(Boolean)
+          .join(" "),
+      })),
+    );
+  }, [employees]);
 
   const comparisonRows = useMemo(() => {
     const maxScore = Math.max(
@@ -478,6 +660,606 @@ const AdminDashboard = () => {
       teamCondition,
     };
   }, [employeeCards, sortedLeaderboard]);
+
+  const handleDeleteSingleTask = async (task) => {
+    if (!task?.employeeEmail) return;
+    const confirmed = window.confirm(
+      `Delete "${task.taskTitle}" for ${task.employeeName}? This hides the task for the employee while preserving analytics.`,
+    );
+    if (!confirmed) return;
+    if (deleteInFlightRef.current) return;
+    deleteInFlightRef.current = true;
+    if (task.taskId) {
+      setOptimisticDeletedTaskIds((prev) => {
+        const next = new Set(prev);
+        next.add(String(task.taskId));
+        return next;
+      });
+    }
+    try {
+      if (task.taskId) {
+        await axios.post(
+          `${API_URL}/employees/${task.employeeEmail}/tasks/${task.taskId}/delete`,
+        );
+      } else {
+        const res = await axios.get(
+          `${API_URL}/employees/${task.employeeEmail}`,
+        );
+        const employee = res.data;
+        const taskIndex = (employee.tasks || []).findIndex(
+          (candidate) =>
+            candidate.taskTitle === task.taskTitle &&
+            candidate.taskDate === task.taskDate &&
+            candidate.taskDescription === task.taskDescription &&
+            !candidate.isDeleted,
+        );
+        if (taskIndex === -1) return;
+        const updatedTasks = [...employee.tasks];
+        updatedTasks[taskIndex] = {
+          ...updatedTasks[taskIndex],
+          isDeleted: true,
+          deletedAt: new Date(),
+        };
+        const updatedEmployee = {
+          ...employee,
+          tasks: updatedTasks,
+          taskCounts: employee.taskCounts || {},
+        };
+        await axios.put(
+          `${API_URL}/employees/${employee.email}`,
+          updatedEmployee,
+        );
+      }
+
+      await fetchDashboardData({ includeAI: false });
+      scheduleAiRefresh();
+    } catch (err) {
+      console.error("Delete task failed:", err);
+      window.alert("Unable to delete task right now. Please retry.");
+      if (task.taskId) {
+        setOptimisticDeletedTaskIds((prev) => {
+          const next = new Set(prev);
+          next.delete(String(task.taskId));
+          return next;
+        });
+      }
+    } finally {
+      deleteInFlightRef.current = false;
+    }
+  };
+
+  const handleDeleteGroupTask = async (task) => {
+    if (!task?.groupId) return;
+    const confirmed = window.confirm(
+      `Delete group task "${task.taskTitle}" for all members? This hides the task but preserves analytics.`,
+    );
+    if (!confirmed) return;
+    if (deleteInFlightRef.current) return;
+    deleteInFlightRef.current = true;
+    setOptimisticDeletedGroupIds((prev) => {
+      const next = new Set(prev);
+      next.add(task.groupId);
+      return next;
+    });
+    try {
+      await axios.post(`${API_URL}/group-tasks/${task.groupId}/delete`);
+      await fetchDashboardData({ includeAI: false });
+      scheduleAiRefresh();
+    } catch (err) {
+      console.error("Delete group task failed:", err);
+      window.alert("Unable to delete group task right now. Please retry.");
+      setOptimisticDeletedGroupIds((prev) => {
+        const next = new Set(prev);
+        next.delete(task.groupId);
+        return next;
+      });
+    } finally {
+      deleteInFlightRef.current = false;
+    }
+  };
+
+  const promptExtensionMinutes = (label) => {
+    const hoursRaw = window.prompt(
+      `Extend by hours${label ? ` for ${label}` : ""}?`,
+    );
+    if (hoursRaw === null) return null;
+    const minutesRaw = window.prompt(
+      `Extend by minutes${label ? ` for ${label}` : ""}?`,
+    );
+    if (minutesRaw === null) return null;
+
+    const hours = Number(hoursRaw || 0);
+    const minutes = Number(minutesRaw || 0);
+    if (!Number.isFinite(hours) || !Number.isFinite(minutes)) {
+      window.alert("Please enter valid numbers for hours and minutes.");
+      return null;
+    }
+    const totalMinutes = hours * 60 + minutes;
+    if (totalMinutes <= 0) {
+      window.alert("Please enter a time greater than 0.");
+      return null;
+    }
+    return totalMinutes;
+  };
+
+  const addDaysToTaskDateLocal = (taskDate, days) => {
+    if (!taskDate) return taskDate;
+    const parsed = new Date(taskDate);
+    if (Number.isNaN(parsed.getTime())) return taskDate;
+    const next = new Date(parsed);
+    next.setDate(next.getDate() + days);
+    return next.toISOString().slice(0, 10);
+  };
+
+  const handleExtendSingleTask = async (task) => {
+    if (!task?.taskId || !task?.employeeEmail) return;
+    const totalMinutes = promptExtensionMinutes(task.taskTitle);
+    if (!totalMinutes) return;
+    const days = totalMinutes / (24 * 60);
+    try {
+      await axios.post(
+        `${API_URL}/employees/${task.employeeEmail}/tasks/${task.taskId}/extend`,
+        { days },
+      );
+      const addedMinutes = Math.round(totalMinutes);
+      const nowIso = new Date().toISOString();
+      setEmployees((prev) =>
+        prev.map((employee) => {
+          if (employee.email !== task.employeeEmail) return employee;
+          const tasks = (employee.tasks || []).map((entry) => {
+            const entryId = entry._id || entry.taskId;
+            if (String(entryId) !== String(task.taskId)) return entry;
+            const updated = { ...entry };
+            updated.estimatedDuration = Math.max(
+              0,
+              Number(updated.estimatedDuration || 0) + addedMinutes,
+            );
+            const nextDate = addDaysToTaskDateLocal(updated.taskDate, days);
+            if (nextDate) {
+              updated.taskDate = nextDate;
+            }
+            if (updated.failed) {
+              updated.failed = false;
+              updated.completed = false;
+              updated.active = true;
+              updated.completedAt = null;
+              updated.startedAt = nowIso;
+            }
+            return updated;
+          });
+          return { ...employee, tasks };
+        }),
+      );
+      await axios.post(
+        `${API_URL}/employees/${task.employeeEmail}/tasks/${task.taskId}/chat/messages`,
+        {
+          senderName: "System",
+          senderEmail: "system",
+          senderRole: "system",
+          message: "Task deadline extended and reactivated by admin",
+          type: "system",
+        },
+      );
+    } catch (err) {
+      console.error("Extend task failed:", err);
+      window.alert("Unable to extend task right now. Please retry.");
+    }
+  };
+
+  const handleExtendGroupTask = async (task) => {
+    if (!task?.groupId) return;
+    const totalMinutes = promptExtensionMinutes(task.taskTitle);
+    if (!totalMinutes) return;
+    const days = totalMinutes / (24 * 60);
+    try {
+      await axios.post(`${API_URL}/group-tasks/${task.groupId}/extend`, {
+        days,
+      });
+      const addedMinutes = Math.round(totalMinutes);
+      const nowIso = new Date().toISOString();
+      setEmployees((prev) =>
+        prev.map((employee) => {
+          const tasks = (employee.tasks || []).map((entry) => {
+            if (entry.groupId !== task.groupId) return entry;
+            const updated = { ...entry };
+            updated.estimatedDuration = Math.max(
+              0,
+              Number(updated.estimatedDuration || 0) + addedMinutes,
+            );
+            const nextDate = addDaysToTaskDateLocal(updated.taskDate, days);
+            if (nextDate) {
+              updated.taskDate = nextDate;
+            }
+            if (Array.isArray(updated.groupMemberEstimates)) {
+              updated.groupMemberEstimates = updated.groupMemberEstimates.map(
+                (member) => ({
+                  ...member,
+                  estimatedMinutes: Math.max(
+                    0,
+                    Number(member.estimatedMinutes || 0) + addedMinutes,
+                  ),
+                }),
+              );
+            }
+            if (updated.failed) {
+              updated.failed = false;
+              updated.completed = false;
+              updated.active = true;
+              updated.completedAt = null;
+              updated.startedAt = nowIso;
+            }
+            return updated;
+          });
+          return { ...employee, tasks };
+        }),
+      );
+      await axios.post(`${API_URL}/group-tasks/${task.groupId}/chat/messages`, {
+        senderName: "System",
+        senderEmail: "system",
+        senderRole: "system",
+        message: "Task deadline extended and reactivated by admin",
+        type: "system",
+      });
+    } catch (err) {
+      console.error("Extend group task failed:", err);
+      window.alert("Unable to extend group task right now. Please retry.");
+    }
+  };
+
+  const handleExtendGroupMember = async (task, member) => {
+    if (!task?.groupId || !member?.email) return;
+    const totalMinutes = promptExtensionMinutes(member.name || member.email);
+    if (!totalMinutes) return;
+    const days = totalMinutes / (24 * 60);
+    try {
+      await axios.post(`${API_URL}/group-tasks/${task.groupId}/extend`, {
+        days,
+        memberEmail: member.email,
+      });
+      const addedMinutes = Math.round(totalMinutes);
+      const nowIso = new Date().toISOString();
+      const memberEmail = String(member.email || "").toLowerCase();
+      setEmployees((prev) =>
+        prev.map((employee) => {
+          const tasks = (employee.tasks || []).map((entry) => {
+            if (entry.groupId !== task.groupId) return entry;
+            if (!Array.isArray(entry.groupMemberEstimates)) return entry;
+            const updated = { ...entry };
+            updated.groupMemberEstimates = entry.groupMemberEstimates.map(
+              (estimate) => {
+                if (
+                  String(estimate?.email || "").toLowerCase() !== memberEmail
+                ) {
+                  return estimate;
+                }
+                return {
+                  ...estimate,
+                  estimatedMinutes: Math.max(
+                    0,
+                    Number(estimate.estimatedMinutes || 0) + addedMinutes,
+                  ),
+                };
+              },
+            );
+            if (updated.failed) {
+              updated.failed = false;
+              updated.completed = false;
+              updated.active = true;
+              updated.completedAt = null;
+              updated.startedAt = nowIso;
+            }
+            return updated;
+          });
+          return { ...employee, tasks };
+        }),
+      );
+      await axios.post(`${API_URL}/group-tasks/${task.groupId}/chat/messages`, {
+        senderName: "System",
+        senderEmail: "system",
+        senderRole: "system",
+        message: "Task deadline extended and reactivated by admin",
+        type: "system",
+      });
+    } catch (err) {
+      console.error("Extend member task failed:", err);
+      window.alert("Unable to extend member duration right now. Please retry.");
+    }
+  };
+
+  const taskMonitoringData = useMemo(() => {
+    const nowMs = Date.now();
+    const singleTasks = [];
+    const groupMap = new Map();
+    const employeeNameByEmail = new Map(
+      employees.map((employee) => [
+        String(employee.email || "").toLowerCase(),
+        [employee.firstName, employee.lastName].filter(Boolean).join(" ") ||
+          employee.email ||
+          "Employee",
+      ]),
+    );
+
+    const ensureGroupEntry = (task) => {
+      if (!task?.groupId) return null;
+      if (!groupMap.has(task.groupId)) {
+        groupMap.set(task.groupId, {
+          groupId: task.groupId,
+          taskTitle: task.taskTitle,
+          taskDate: task.taskDate,
+          category: task.category,
+          groupMembers: Array.isArray(task.groupMembers)
+            ? task.groupMembers
+            : [],
+          assignments: Array.isArray(task.groupStepAssignments)
+            ? task.groupStepAssignments
+            : [],
+          groupMemberEstimates: Array.isArray(task.groupMemberEstimates)
+            ? task.groupMemberEstimates
+            : [],
+          estimatedDuration: Number(task.estimatedDuration) || 0,
+          explainEstimatedTime: task.explainEstimatedTime,
+          groupAcceptedEmails: Array.isArray(task.groupAcceptedEmails)
+            ? task.groupAcceptedEmails
+            : [],
+          tasksByEmail: new Map(),
+        });
+      }
+      return groupMap.get(task.groupId);
+    };
+
+    employees.forEach((employee) => {
+      (employee.tasks || []).forEach((task) => {
+        if (task?.isDeleted) return;
+        if (task?._id && optimisticDeletedTaskIds.has(String(task._id))) {
+          return;
+        }
+        if (task?.groupId && optimisticDeletedGroupIds.has(task.groupId)) {
+          return;
+        }
+
+        if (task?.groupTask && task?.groupId) {
+          if (task?.completed && !task?.failed) return;
+          const entry = ensureGroupEntry(task);
+          if (!entry) return;
+          entry.tasksByEmail.set(
+            String(employee.email || "").toLowerCase(),
+            task,
+          );
+          if (!entry.groupMembers.length && Array.isArray(task.groupMembers)) {
+            entry.groupMembers = task.groupMembers;
+          }
+          if (
+            !entry.assignments.length &&
+            Array.isArray(task.groupStepAssignments)
+          ) {
+            entry.assignments = task.groupStepAssignments;
+          }
+          if (
+            !entry.groupMemberEstimates.length &&
+            Array.isArray(task.groupMemberEstimates)
+          ) {
+            entry.groupMemberEstimates = task.groupMemberEstimates;
+          }
+          if (!entry.estimatedDuration && Number(task.estimatedDuration) > 0) {
+            entry.estimatedDuration = Number(task.estimatedDuration);
+          }
+          if (!entry.explainEstimatedTime && task.explainEstimatedTime) {
+            entry.explainEstimatedTime = task.explainEstimatedTime;
+          }
+          if (
+            (!entry.groupAcceptedEmails ||
+              entry.groupAcceptedEmails.length === 0) &&
+            Array.isArray(task.groupAcceptedEmails)
+          ) {
+            entry.groupAcceptedEmails = task.groupAcceptedEmails;
+          }
+          return;
+        }
+
+        const isPending = Boolean(task?.notAccepted || task?.newTask);
+        if (task?.active && !task?.completed && !task?.failed) {
+          const estimatedMinutes =
+            Number(task.estimatedDuration) ||
+            parseDurationMinutes(task.explainEstimatedTime);
+          const startMs = getTaskStartMs(task);
+          const totalMs =
+            estimatedMinutes > 0 ? estimatedMinutes * 60 * 1000 : 0;
+          const elapsedMs = startMs ? Math.max(0, nowMs - startMs) : 0;
+          const remainingMs =
+            totalMs > 0 && startMs ? totalMs - elapsedMs : null;
+          const steps = Array.isArray(task.explainSteps)
+            ? task.explainSteps
+            : [];
+          const stepChecks = Array.isArray(task.explainStepChecks)
+            ? task.explainStepChecks
+            : [];
+          const completedSteps = steps.length
+            ? stepChecks.filter(Boolean).length
+            : 0;
+          const stepProgressPercent = steps.length
+            ? Math.round((completedSteps / steps.length) * 100)
+            : null;
+          const timeProgressPercent =
+            totalMs > 0 && startMs
+              ? Math.min(100, Math.round((elapsedMs / totalMs) * 100))
+              : 0;
+          const progressPercent =
+            stepProgressPercent !== null
+              ? stepProgressPercent
+              : timeProgressPercent;
+
+          const isOverdue = remainingMs !== null && remainingMs < 0;
+          singleTasks.push({
+            id: task._id || `${task.taskTitle}-${task.taskDate}`,
+            taskId: task._id,
+            employeeEmail: employee.email,
+            employeeName:
+              employeeNameByEmail.get(
+                String(employee.email || "").toLowerCase(),
+              ) || "Employee",
+            taskTitle: task.taskTitle,
+            taskDate: task.taskDate,
+            taskDescription: task.taskDescription,
+            steps,
+            completedSteps,
+            totalSteps: steps.length,
+            progressPercent,
+            remainingMs,
+            estimatedMinutes,
+            statusLabel: isOverdue ? "Failed" : "Active",
+            updatedAt: task.completedAt || task.submittedAt || task.startedAt,
+          });
+        } else if (isPending && !task?.completed && !task?.failed) {
+          const steps = Array.isArray(task.explainSteps)
+            ? task.explainSteps
+            : [];
+          const stepChecks = Array.isArray(task.explainStepChecks)
+            ? task.explainStepChecks
+            : [];
+          const completedSteps = steps.length
+            ? stepChecks.filter(Boolean).length
+            : 0;
+          const progressPercent = steps.length
+            ? Math.round((completedSteps / steps.length) * 100)
+            : 0;
+          singleTasks.push({
+            id: task._id || `${task.taskTitle}-${task.taskDate}`,
+            taskId: task._id,
+            employeeEmail: employee.email,
+            employeeName:
+              employeeNameByEmail.get(
+                String(employee.email || "").toLowerCase(),
+              ) || "Employee",
+            taskTitle: task.taskTitle,
+            taskDate: task.taskDate,
+            taskDescription: task.taskDescription,
+            steps,
+            completedSteps,
+            totalSteps: steps.length,
+            progressPercent,
+            remainingMs: null,
+            estimatedMinutes: Number(task.estimatedDuration) || 0,
+            statusLabel: "Awaiting Acceptance",
+            updatedAt: task.assignedAt || task.createdAt || task.taskDate,
+          });
+        }
+      });
+    });
+
+    const groupTasks = Array.from(groupMap.values())
+      .map((entry) => {
+        const assignments = Array.isArray(entry.assignments)
+          ? entry.assignments
+          : [];
+        const totalSteps = assignments.length;
+        const completedSteps = assignments.filter(
+          (step) => step.completed,
+        ).length;
+        const overallPercent =
+          totalSteps > 0 ? Math.round((completedSteps / totalSteps) * 100) : 0;
+        const members = (entry.groupMembers || []).map((member) => {
+          const email = String(member.email || "").toLowerCase();
+          const memberAssignments = assignments.filter(
+            (step) => String(step.assignedEmail || "").toLowerCase() === email,
+          );
+          const memberCompleted = memberAssignments.filter(
+            (step) => step.completed,
+          ).length;
+          const memberPercent =
+            memberAssignments.length > 0
+              ? Math.round((memberCompleted / memberAssignments.length) * 100)
+              : 0;
+          const memberTask = entry.tasksByEmail.get(email);
+          const memberStartMs = getTaskStartMs(memberTask || {});
+          const memberEstimate =
+            Number(
+              entry.groupMemberEstimates.find(
+                (item) => String(item?.email || "").toLowerCase() === email,
+              )?.estimatedMinutes,
+            ) ||
+            (entry.estimatedDuration > 0 && entry.groupMembers.length > 0
+              ? Math.max(
+                  1,
+                  Math.round(
+                    entry.estimatedDuration / entry.groupMembers.length,
+                  ),
+                )
+              : parseDurationMinutes(entry.explainEstimatedTime));
+          const memberTotalMs =
+            memberEstimate > 0 ? memberEstimate * 60 * 1000 : 0;
+          const memberRemainingMs =
+            memberTotalMs > 0 && memberStartMs
+              ? memberTotalMs - Math.max(0, nowMs - memberStartMs)
+              : null;
+
+          return {
+            email,
+            name:
+              member.name ||
+              employeeNameByEmail.get(email) ||
+              member.email ||
+              "Employee",
+            assignments: memberAssignments,
+            completedCount: memberCompleted,
+            percent: memberPercent,
+            remainingMs: memberRemainingMs,
+            estimatedMinutes: memberEstimate,
+          };
+        });
+
+        const awaitingGroupAcceptance =
+          (entry.groupAcceptedEmails || []).length === 0;
+        const memberTaskStates = Array.from(entry.tasksByEmail.values());
+        const allCompleted =
+          memberTaskStates.length > 0 &&
+          memberTaskStates.every((task) => task?.completed && !task?.failed);
+        const hasFailed = memberTaskStates.some((task) => task?.failed);
+        const remainingCandidates = members
+          .map((member) => member.remainingMs)
+          .filter((value) => typeof value === "number");
+        const overallRemainingMs = remainingCandidates.length
+          ? Math.max(...remainingCandidates)
+          : null;
+        const isOverdue = overallRemainingMs !== null && overallRemainingMs < 0;
+
+        return {
+          groupId: entry.groupId,
+          taskTitle: entry.taskTitle,
+          taskDate: entry.taskDate,
+          category: entry.category,
+          totalSteps,
+          completedSteps,
+          overallPercent,
+          members,
+          overallRemainingMs,
+          groupAcceptedEmails: entry.groupAcceptedEmails,
+          hasFailed,
+          allCompleted,
+          statusLabel: awaitingGroupAcceptance
+            ? "Awaiting Acceptance"
+            : hasFailed || isOverdue
+              ? "Failed"
+              : "Active",
+        };
+      })
+      .filter((entry) => {
+        if (entry.allCompleted && !entry.hasFailed) return false;
+        if (entry.members.length === 0) return false;
+        if ((entry.groupAcceptedEmails || []).length > 0) return true;
+        return entry.members.some((member) => member.assignments.length > 0);
+      });
+
+    return {
+      nowMs,
+      singleTasks,
+      groupTasks,
+    };
+  }, [
+    employees,
+    lastSync,
+    optimisticDeletedTaskIds,
+    optimisticDeletedGroupIds,
+  ]);
 
   const fallbackRecommendations = useMemo(() => {
     const recommendations = [];
@@ -547,6 +1329,81 @@ const AdminDashboard = () => {
     }
   };
 
+  const employeeSearchResults = useMemo(() => {
+    const query = employeeSearch.trim().toLowerCase();
+    if (!query) return employees.slice(0, 5);
+    return employees
+      .filter((employee) => {
+        const name =
+          `${employee.firstName || ""} ${employee.lastName || ""}`.toLowerCase();
+        const email = String(employee.email || "").toLowerCase();
+        return name.includes(query) || email.includes(query);
+      })
+      .slice(0, 8);
+  }, [employeeSearch, employees]);
+
+  const beginEditEmployee = (employee) => {
+    setEditingEmployeeEmail(employee.email);
+    setEmployeeActionError("");
+    setEmployeeActionSuccess("");
+    setEditEmployeeForm({
+      firstName: employee.firstName || "",
+      lastName: employee.lastName || "",
+      email: employee.email || "",
+      role: employee.role || "employee",
+    });
+  };
+
+  const handleEditEmployeeInput = (event) => {
+    const { name, value } = event.target;
+    setEditEmployeeForm((prev) => ({ ...prev, [name]: value }));
+  };
+
+  const saveEmployeeEdit = async (event) => {
+    event.preventDefault();
+    if (!editingEmployeeEmail) return;
+    setEmployeeActionError("");
+    setEmployeeActionSuccess("");
+    try {
+      await axios.patch(
+        `${API_URL}/employees/${editingEmployeeEmail}/profile`,
+        editEmployeeForm,
+      );
+      setEditingEmployeeEmail("");
+      setEmployeeActionSuccess("Employee details updated.");
+      await fetchDashboardData({ includeAI: false });
+      scheduleAiRefresh();
+    } catch (err) {
+      setEmployeeActionError(
+        sanitizeApiError(err, "Unable to update employee details."),
+      );
+    }
+  };
+
+  const deleteEmployee = async (employee) => {
+    const name = [employee.firstName, employee.lastName]
+      .filter(Boolean)
+      .join(" ");
+    const confirmed = window.confirm(
+      `Delete employee access for ${name || employee.email}? Historical task data will be preserved.`,
+    );
+    if (!confirmed) return;
+    setEmployeeActionError("");
+    setEmployeeActionSuccess("");
+    try {
+      await axios.delete(`${API_URL}/employees/${employee.email}`);
+      setEmployeeActionSuccess(
+        "Employee deleted from active dashboard. History is preserved.",
+      );
+      await fetchDashboardData({ includeAI: false });
+      scheduleAiRefresh();
+    } catch (err) {
+      setEmployeeActionError(
+        sanitizeApiError(err, "Unable to delete employee."),
+      );
+    }
+  };
+
   return (
     <div
       className={
@@ -584,11 +1441,7 @@ const AdminDashboard = () => {
             {aiSummaryText}
           </h2>
           <div className="mt-2 flex flex-wrap items-center gap-2 text-xs opacity-80">
-            <span>
-              {lastSync
-                ? `Last sync: ${lastSync.toLocaleTimeString()}`
-                : "Syncing..."}
-            </span>
+            <span>Last Sync Time: {formatSyncTime(lastSync)}</span>
             <span>•</span>
             <span>
               {aiLoading
@@ -637,6 +1490,17 @@ const AdminDashboard = () => {
             />
           </div>
         </section>
+
+        <TaskMonitoringPanel
+          theme={theme}
+          data={taskMonitoringData}
+          loading={loading}
+          onDeleteSingle={handleDeleteSingleTask}
+          onDeleteGroup={handleDeleteGroupTask}
+          onExtendSingle={handleExtendSingleTask}
+          onExtendGroup={handleExtendGroupTask}
+          onExtendMember={handleExtendGroupMember}
+        />
 
         <section className="grid grid-cols-1 gap-4 xl:grid-cols-3">
           <div
@@ -769,7 +1633,11 @@ const AdminDashboard = () => {
           >
             <h3 className="text-sm font-semibold">Task Assignment</h3>
             <div className="mt-3">
-              <CreateTask theme={theme} onTaskCreated={fetchDashboardData} />
+              <CreateTask
+                theme={theme}
+                employees={employees}
+                onTaskCreated={fetchDashboardData}
+              />
             </div>
           </div>
 
@@ -838,6 +1706,151 @@ const AdminDashboard = () => {
                 </p>
               </form>
             )}
+
+            <div
+              className={`mt-4 rounded-lg border p-3 ${theme === "dark" ? "border-white/10 bg-black/20" : "border-gray-200 bg-gray-50"}`}
+            >
+              <h3 className="text-sm font-semibold">Manage Employees</h3>
+              <p className="mt-1 text-[11px] opacity-70">
+                Search by name or email. Deleted employees are archived, keeping
+                task history safe.
+              </p>
+              <EmployeeAutocomplete
+                employees={employees}
+                value={employeeSearch}
+                onChange={setEmployeeSearch}
+                onSelect={(employee) => setEmployeeSearch(employee.email)}
+                placeholder="Search employee"
+                theme={theme}
+                className="mt-3"
+              />
+
+              {employeeActionError && (
+                <p className="mt-2 text-xs text-red-400">
+                  {employeeActionError}
+                </p>
+              )}
+              {employeeActionSuccess && (
+                <p className="mt-2 text-xs text-emerald-400">
+                  {employeeActionSuccess}
+                </p>
+              )}
+
+              <div className="mt-3 max-h-[300px] space-y-2 overflow-y-auto pr-1">
+                {employeeSearchResults.map((employee) => {
+                  const isEditing = editingEmployeeEmail === employee.email;
+                  const displayName =
+                    [employee.firstName, employee.lastName]
+                      .filter(Boolean)
+                      .join(" ") || "Unnamed employee";
+                  return (
+                    <div
+                      key={employee._id || employee.email}
+                      className={`rounded-md border p-2 ${theme === "dark" ? "border-white/10 bg-white/5" : "border-gray-200 bg-white"}`}
+                    >
+                      {isEditing ? (
+                        <form onSubmit={saveEmployeeEdit} className="space-y-2">
+                          <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                            <input
+                              name="firstName"
+                              value={editEmployeeForm.firstName}
+                              onChange={handleEditEmployeeInput}
+                              placeholder="First name"
+                              className={`rounded-md border px-2 py-1.5 text-xs ${theme === "dark" ? "border-white/10 bg-[#0f0f0f]" : "border-gray-200 bg-white"}`}
+                            />
+                            <input
+                              name="lastName"
+                              value={editEmployeeForm.lastName}
+                              onChange={handleEditEmployeeInput}
+                              placeholder="Last name"
+                              className={`rounded-md border px-2 py-1.5 text-xs ${theme === "dark" ? "border-white/10 bg-[#0f0f0f]" : "border-gray-200 bg-white"}`}
+                            />
+                          </div>
+                          <EmployeeAutocomplete
+                            employees={employees}
+                            inputName="email"
+                            inputType="email"
+                            value={editEmployeeForm.email}
+                            onChange={(email) =>
+                              setEditEmployeeForm((prev) => ({
+                                ...prev,
+                                email,
+                              }))
+                            }
+                            placeholder="Email"
+                            theme={theme}
+                          />
+                          <input
+                            name="role"
+                            value={editEmployeeForm.role}
+                            onChange={handleEditEmployeeInput}
+                            placeholder="Role, e.g. Developer"
+                            className={`w-full rounded-md border px-2 py-1.5 text-xs ${theme === "dark" ? "border-white/10 bg-[#0f0f0f]" : "border-gray-200 bg-white"}`}
+                          />
+                          <p className="text-[10px] opacity-70">
+                            Speciality is inferred automatically from role,
+                            tasks, and completion patterns.
+                          </p>
+                          <div className="flex gap-2">
+                            <button
+                              type="submit"
+                              className="rounded-md bg-emerald-500/20 px-2 py-1 text-[11px] font-semibold text-emerald-300"
+                            >
+                              Save
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setEditingEmployeeEmail("")}
+                              className="rounded-md bg-white/10 px-2 py-1 text-[11px] font-semibold"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </form>
+                      ) : (
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="truncate text-xs font-semibold">
+                              {displayName}
+                            </p>
+                            <p className="truncate text-[11px] opacity-70">
+                              {employee.email}
+                            </p>
+                            <p className="text-[10px] opacity-70">
+                              {employee.isPasswordSet
+                                ? "Active"
+                                : "Not Activated"}{" "}
+                              - {employee.role || "employee"} -{" "}
+                              {employee.inferredSpeciality ||
+                                "Speciality inferred"}
+                            </p>
+                          </div>
+                          <div className="flex shrink-0 gap-1">
+                            <button
+                              type="button"
+                              onClick={() => beginEditEmployee(employee)}
+                              className="rounded-md border border-cyan-400/30 px-2 py-1 text-[11px] font-semibold text-cyan-300"
+                            >
+                              Edit
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => deleteEmployee(employee)}
+                              className="rounded-md border border-red-400/30 px-2 py-1 text-[11px] font-semibold text-red-300"
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+                {employeeSearchResults.length === 0 && (
+                  <p className="text-xs opacity-70">No employees found.</p>
+                )}
+              </div>
+            </div>
           </div>
         </section>
 
@@ -895,6 +1908,12 @@ const AdminDashboard = () => {
                             className={`rounded-full px-2 py-1 text-[10px] font-semibold ${employee.trendMeta.className}`}
                           >
                             {employee.trendMeta.icon} {employee.trendMeta.label}
+                          </span>
+                          <span
+                            title={employee.workloadStatus.detail}
+                            className={`rounded-full border px-2 py-1 text-[10px] font-semibold ${employee.workloadStatus.className}`}
+                          >
+                            {employee.workloadStatus.label}
                           </span>
                         </div>
                       </div>
@@ -957,6 +1976,17 @@ const AdminDashboard = () => {
                           label="Avg"
                           value={`${employee.ranking?.stats?.averageCompletionTimeMinutes || 0} min`}
                         />
+                      </div>
+
+                      <div
+                        className={`mt-3 rounded-md border p-2.5 text-[11px] ${employee.workloadStatus.className}`}
+                      >
+                        <p className="font-semibold">
+                          Workload: {employee.workloadStatus.label}
+                        </p>
+                        <p className="mt-1 opacity-85">
+                          {employee.workloadStatus.detail}
+                        </p>
                       </div>
 
                       <div className="mt-3 rounded-md border border-white/10 bg-black/10 p-2.5 text-[11px]">
@@ -1070,18 +2100,18 @@ const AdminDashboard = () => {
           <div
             className={`mt-3 max-h-[260px] overflow-y-auto rounded-lg p-3 ${theme === "dark" ? "bg-white/5" : "bg-gray-50"}`}
           >
-            <p className="text-xs opacity-70">
-              Recommendations (pattern + metric)
-            </p>
-            <ul className="mt-1 list-disc space-y-1 pl-4 text-xs">
-              {(
-                leaderboardData.aiInsights?.recommendations || [
-                  ...fallbackRecommendations,
-                ]
-              ).map((tip, idx) => (
-                <li key={idx}>{tip}</li>
-              ))}
-            </ul>
+            <p className="text-xs opacity-70">Quick actions</p>
+            <div className="mt-2">
+              <ActionableInsightList
+                items={leaderboardData.aiInsights?.recommendations || []}
+                fallbackItems={fallbackRecommendations}
+                limit={5}
+                theme={theme}
+                source={
+                  leaderboardData.insightEngine === "ai" ? "AI" : "System"
+                }
+              />
+            </div>
           </div>
 
           {(leaderboardData.aiInsights?.teamPattern ||
@@ -1094,27 +2124,23 @@ const AdminDashboard = () => {
               className={`mt-3 max-h-[260px] overflow-y-auto rounded-lg p-3 ${theme === "dark" ? "bg-white/5" : "bg-gray-50"}`}
             >
               <p className="text-xs opacity-70">Team pattern analysis</p>
-              <ul className="mt-1 list-disc space-y-1 pl-4 text-xs">
-                {leaderboardData.aiInsights?.teamPattern && (
-                  <li>{leaderboardData.aiInsights.teamPattern}</li>
-                )}
-                {leaderboardData.aiInsights?.workloadImbalance && (
-                  <li>{leaderboardData.aiInsights.workloadImbalance}</li>
-                )}
-                {leaderboardData.aiInsights?.failureClusters && (
-                  <li>{leaderboardData.aiInsights.failureClusters}</li>
-                )}
-                {(leaderboardData.aiInsights?.underutilizedEmployees || []).map(
-                  (msg, idx) => (
-                    <li key={`underutilized-${idx}`}>{msg}</li>
-                  ),
-                )}
-                {(leaderboardData.aiInsights?.changeSignals || []).map(
-                  (msg, idx) => (
-                    <li key={`change-${idx}`}>{msg}</li>
-                  ),
-                )}
-              </ul>
+              <div className="mt-2">
+                <ActionableInsightList
+                  items={[
+                    leaderboardData.aiInsights?.teamPattern,
+                    leaderboardData.aiInsights?.workloadImbalance,
+                    leaderboardData.aiInsights?.failureClusters,
+                    ...(leaderboardData.aiInsights?.underutilizedEmployees ||
+                      []),
+                    ...(leaderboardData.aiInsights?.changeSignals || []),
+                  ].filter(Boolean)}
+                  limit={6}
+                  theme={theme}
+                  source={
+                    leaderboardData.insightEngine === "ai" ? "AI" : "System"
+                  }
+                />
+              </div>
             </div>
           )}
         </section>
@@ -1129,6 +2155,12 @@ const AdminDashboard = () => {
           </div>
         )}
       </section>
+      <TaskChatDock
+        tasks={chatTasks}
+        user={{ name: "Admin", email: "admin", role: "admin" }}
+        theme={theme}
+        isAdmin
+      />
     </div>
   );
 };
@@ -1169,5 +2201,226 @@ const LoadingSkeleton = ({ theme }) => (
     </div>
   </section>
 );
+
+const TaskMonitoringPanel = ({
+  theme,
+  data,
+  loading = false,
+  onDeleteSingle,
+  onDeleteGroup,
+  onExtendSingle,
+  onExtendGroup,
+  onExtendMember,
+}) => {
+  const isDark = theme === "dark";
+  const groupTasks = data?.groupTasks || [];
+  const singleTasks = data?.singleTasks || [];
+
+  return (
+    <section
+      className={`rounded-2xl border p-4 md:p-5 ${isDark ? "border-white/10 bg-[#181818] text-white" : "border-gray-200 bg-white text-gray-900"}`}
+    >
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="text-sm font-semibold">Real-time Task Monitor</h3>
+          <p className="text-[11px] opacity-70">
+            Tracking active, pending, and overdue tasks in real-time.
+          </p>
+        </div>
+        <span className="rounded-full border px-2 py-1 text-[10px] font-semibold opacity-80">
+          {groupTasks.length + singleTasks.length} tracked tasks
+        </span>
+      </div>
+
+      {loading && (
+        <div className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-2">
+          {["group", "single"].map((key) => (
+            <div key={key} className="space-y-3">
+              <div
+                className={`h-4 w-32 animate-pulse rounded ${isDark ? "bg-white/10" : "bg-gray-200"}`}
+              />
+              {[1, 2].map((idx) => (
+                <div
+                  key={`${key}-${idx}`}
+                  className={`h-28 rounded-lg border ${isDark ? "border-white/10 bg-white/5" : "border-gray-200 bg-gray-50"}`}
+                />
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {!loading && (
+        <div className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-2">
+          <div className="space-y-3">
+            <h4 className="text-xs font-semibold uppercase tracking-wide opacity-70">
+              Group Tasks
+            </h4>
+            {groupTasks.length === 0 ? (
+              <div
+                className={`rounded-lg border p-3 text-xs ${isDark ? "border-white/10 bg-black/20 text-white/70" : "border-gray-200 bg-gray-50 text-gray-600"}`}
+              >
+                No group tasks right now.
+              </div>
+            ) : (
+              groupTasks.map((task) => (
+                <article
+                  key={task.groupId}
+                  className={`rounded-lg border p-3 ${isDark ? "border-cyan-400/20 bg-cyan-500/5" : "border-cyan-200 bg-cyan-50"}`}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold">
+                        {task.taskTitle || "Group task"}
+                      </p>
+                      <p className="text-[11px] opacity-70">
+                        {task.category || "General"} • {task.members.length}{" "}
+                        members
+                      </p>
+                      {task.statusLabel && (
+                        <p className="mt-1 text-[10px] uppercase tracking-wide opacity-60">
+                          {task.statusLabel}
+                        </p>
+                      )}
+                    </div>
+                    <div className="text-right text-[11px]">
+                      <p className="font-semibold">{task.overallPercent}%</p>
+                      <p className="opacity-70">
+                        {task.completedSteps}/{task.totalSteps || 0} subtasks
+                      </p>
+                      <p className="opacity-70">
+                        {formatRemainingTime(task.overallRemainingMs)}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => onDeleteGroup?.(task)}
+                        className={`mt-1 rounded-md border px-2 py-1 text-[10px] font-semibold ${isDark ? "border-red-400/40 text-red-300 hover:bg-red-500/10" : "border-red-300 text-red-600 hover:bg-red-50"}`}
+                      >
+                        Delete
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onExtendGroup?.(task)}
+                        className={`mt-1 rounded-md border px-2 py-1 text-[10px] font-semibold ${isDark ? "border-cyan-400/40 text-cyan-200 hover:bg-cyan-500/10" : "border-cyan-200 text-cyan-700 hover:bg-cyan-50"}`}
+                      >
+                        Extend
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-black/20">
+                    <div
+                      className="h-full rounded-full bg-cyan-400"
+                      style={{ width: `${Math.max(4, task.overallPercent)}%` }}
+                    />
+                  </div>
+
+                  <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+                    {task.members.map((member) => (
+                      <div
+                        key={`${task.groupId}-${member.email}`}
+                        className={`rounded-md border p-2 ${isDark ? "border-white/10 bg-black/20" : "border-gray-200 bg-white"}`}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="truncate text-xs font-semibold">
+                              {member.name}
+                            </p>
+                            <p className="text-[11px] opacity-70">
+                              {member.completedCount}/
+                              {member.assignments.length} subtasks
+                            </p>
+                          </div>
+                          <div className="text-right text-[11px]">
+                            <p className="font-semibold">{member.percent}%</p>
+                            <p className="opacity-70">
+                              {formatRemainingTime(member.remainingMs)}
+                            </p>
+                            <button
+                              type="button"
+                              onClick={() => onExtendMember?.(task, member)}
+                              className={`mt-1 rounded-md border px-2 py-1 text-[10px] font-semibold ${isDark ? "border-emerald-400/40 text-emerald-200 hover:bg-emerald-500/10" : "border-emerald-200 text-emerald-700 hover:bg-emerald-50"}`}
+                            >
+                              Extend
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </article>
+              ))
+            )}
+          </div>
+
+          <div className="space-y-3">
+            <h4 className="text-xs font-semibold uppercase tracking-wide opacity-70">
+              Single Tasks
+            </h4>
+            {singleTasks.length === 0 ? (
+              <div
+                className={`rounded-lg border p-3 text-xs ${isDark ? "border-white/10 bg-black/20 text-white/70" : "border-gray-200 bg-gray-50 text-gray-600"}`}
+              >
+                No single tasks right now.
+              </div>
+            ) : (
+              singleTasks.map((task) => (
+                <article
+                  key={task.id}
+                  className={`rounded-lg border p-3 ${isDark ? "border-emerald-400/20 bg-emerald-500/5" : "border-emerald-200 bg-emerald-50"}`}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold">{task.taskTitle}</p>
+                      <p className="text-[11px] opacity-70">
+                        {task.employeeName}
+                      </p>
+                      {task.statusLabel && (
+                        <p className="mt-1 text-[10px] uppercase tracking-wide opacity-60">
+                          {task.statusLabel}
+                        </p>
+                      )}
+                    </div>
+                    <div className="text-right text-[11px]">
+                      <p className="font-semibold">{task.progressPercent}%</p>
+                      <p className="opacity-70">
+                        {formatRemainingTime(task.remainingMs)}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => onDeleteSingle?.(task)}
+                        className={`mt-1 rounded-md border px-2 py-1 text-[10px] font-semibold ${isDark ? "border-red-400/40 text-red-300 hover:bg-red-500/10" : "border-red-300 text-red-600 hover:bg-red-50"}`}
+                      >
+                        Delete
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onExtendSingle?.(task)}
+                        className={`mt-1 rounded-md border px-2 py-1 text-[10px] font-semibold ${isDark ? "border-emerald-400/40 text-emerald-200 hover:bg-emerald-500/10" : "border-emerald-200 text-emerald-700 hover:bg-emerald-50"}`}
+                      >
+                        Extend
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-black/20">
+                    <div
+                      className="h-full rounded-full bg-emerald-400"
+                      style={{ width: `${Math.max(4, task.progressPercent)}%` }}
+                    />
+                  </div>
+
+                  <div className="mt-2 text-[11px] opacity-70">
+                    {`${task.completedSteps || 0} / ${task.totalSteps || 0} subtasks completed`}
+                  </div>
+                </article>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+};
 
 export default AdminDashboard;

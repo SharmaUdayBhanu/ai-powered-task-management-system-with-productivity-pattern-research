@@ -1,10 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
 import TaskDeadlineTimer from "./TaskDeadlineTimer";
+import TaskRiskBadge from "./TaskRiskBadge";
+import GroupTaskBadge from "./GroupTaskBadge";
+import TaskAIInsight from "./TaskAIInsight";
 
 const API_URL = `${import.meta.env.VITE_API_URL || ""}/api`;
 
-const NewTask = ({ data, onAccept, theme = "dark" }) => {
+const NewTask = ({ data, onAccept, onExplain, theme = "dark" }) => {
   const [task, setTask] = useState(data);
   const [loading, setLoading] = useState(false);
   const [actionError, setActionError] = useState("");
@@ -128,9 +131,37 @@ const NewTask = ({ data, onAccept, theme = "dark" }) => {
     setLoading(true);
     setActionError("");
     try {
+      if (task.groupTask && task.groupId) {
+        const res = await axios.post(
+          `${API_URL}/group-tasks/${task.groupId}/accept`,
+          { employeeEmail: data.email },
+        );
+        const updatedEmployee = (res.data?.employees || []).find(
+          (employee) => employee.email === data.email,
+        );
+        const updatedTask = updatedEmployee?.tasks?.find(
+          (candidate) => candidate.groupId === task.groupId,
+        );
+        if (updatedTask) setTask(updatedTask);
+        if (onAccept) {
+          onAccept({
+            taskId: updatedTask?._id || `${task.taskTitle}-${task.taskDate}`,
+            updatedTask,
+          });
+        }
+        return;
+      }
+
       const res = await axios.get(`${API_URL}/employees/${data.email}`);
       const employee = res.data;
       const taskIndex = employee.tasks.findIndex(isSameTask);
+      {
+        (task.notAccepted || task.newTask) && (
+          <span className="rounded-full bg-white/20 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-white/90">
+            Awaiting Acceptance
+          </span>
+        );
+      }
       if (taskIndex === -1) return;
       const now = new Date();
       const updatedTask = {
@@ -157,7 +188,12 @@ const NewTask = ({ data, onAccept, theme = "dark" }) => {
         updatedEmployee,
       );
       setTask(updatedTask);
-      if (onAccept) onAccept();
+      if (onAccept) {
+        onAccept({
+          taskId: updatedTask?._id || `${task.taskTitle}-${task.taskDate}`,
+          updatedTask,
+        });
+      }
     } catch (err) {
       setActionError("Unable to accept this task right now. Please retry.");
     } finally {
@@ -234,13 +270,19 @@ const NewTask = ({ data, onAccept, theme = "dark" }) => {
           </h3>
           <h4 className="text-sm">{task.taskDate}</h4>
         </div>
-        <div className="flex justify-between items-center mt-2 flex-shrink-0">
+        <div className="flex flex-wrap items-center gap-2 mt-2 flex-shrink-0">
           <span className="text-xs font-semibold bg-black/20 text-white px-2 py-1 rounded">
             AI Suggested Priority: {task.aiPriority || "Medium"}
           </span>
+          <TaskRiskBadge task={task} />
+          <GroupTaskBadge task={task} />
         </div>
         <div className="mt-2 flex justify-between items-center flex-shrink-0">
-          <TaskDeadlineTimer task={task} theme={theme} />
+          <TaskDeadlineTimer
+            task={task}
+            employeeEmail={data.email}
+            theme={theme}
+          />
         </div>
         <h2 className="mt-3 text-xl font-semibold flex-shrink-0 line-clamp-2">
           {task.taskTitle}
@@ -307,7 +349,7 @@ const NewTask = ({ data, onAccept, theme = "dark" }) => {
         </h3>
         <h4 className="text-sm">{task.taskDate}</h4>
       </div>
-      <div className="flex justify-between items-center mt-2 flex-shrink-0">
+      <div className="flex flex-wrap items-center gap-2 mt-2 flex-shrink-0">
         <span
           className={`text-xs font-semibold px-2 py-1 rounded ${
             isNotAccepted
@@ -317,10 +359,16 @@ const NewTask = ({ data, onAccept, theme = "dark" }) => {
         >
           AI Suggested Priority: {task.aiPriority || "Medium"}
         </span>
+        <TaskRiskBadge task={task} />
+        <GroupTaskBadge task={task} />
       </div>
       {!isNotAccepted && (
         <div className="mt-2 flex justify-between items-center flex-shrink-0">
-          <TaskDeadlineTimer task={task} theme={theme} />
+          <TaskDeadlineTimer
+            task={task}
+            employeeEmail={data.email}
+            theme={theme}
+          />
         </div>
       )}
       {isNotAccepted && (

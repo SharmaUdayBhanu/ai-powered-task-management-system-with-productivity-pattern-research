@@ -3,12 +3,27 @@
 
 @custom-variant dark (&:is(.dark *));
 
-body{
+body {
   color: #fff;
   background-color: #111;
 }
-#tasklist::-webkit-scrollbar{
+#tasklist::-webkit-scrollbar {
   display: none;
+}
+
+.chat-slip {
+  animation: chatSlipIn 0.35s ease-out;
+}
+
+@keyframes chatSlipIn {
+  from {
+    opacity: 0;
+    transform: translateX(-20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
 }
 
 @theme inline {

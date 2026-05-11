@@ -1,8 +1,9 @@
-import React, { useMemo, useState, useEffect } from "react";
+import React, { useMemo, useState, useEffect, useRef } from "react";
 import Header from "../other/Header";
 import TaskListNumbers from "../other/TaskListNumbers";
 import TaskList from "../TaskList/TaskList";
 import ProductivityDashboard from "../ProductivityDashboard";
+import TaskChatDock from "../TaskChat/TaskChatDock";
 import { io } from "socket.io-client";
 import { Moon, Sun, TrendingDown, TrendingUp } from "lucide-react";
 import { getWithRetry, sanitizeApiError } from "../../lib/apiClient";
@@ -41,13 +42,20 @@ const getWeekBounds = () => {
   return { currentWeekStart, previousWeekStart };
 };
 
+const computeTaskCounts = (tasks = []) => ({
+  newTask: tasks.filter((task) => task.newTask && !task.isDeleted && !task.notAccepted).length,
+  active: tasks.filter((task) => task.active && !task.isDeleted && !task.notAccepted).length,
+  completed: tasks.filter((task) => task.completed && !task.isDeleted && !task.notAccepted).length,
+  failed: tasks.filter((task) => task.failed && !task.isDeleted && !task.notAccepted).length,
+});
+
 const EmployeeDashboard = ({ data }) => {
   const [employee, setEmployee] = useState(data);
   const [refreshKey, setRefreshKey] = useState(0);
   const [loading, setLoading] = useState(true);
   const [theme, setTheme] = useState("dark");
-  const [isModalOpen, setIsModalOpen] = useState(false);
   const [error, setError] = useState("");
+  const modalOpenRef = useRef(false);
 
   const fetchEmployee = async ({ silent = false } = {}) => {
     if (!silent) setLoading(true);
@@ -66,22 +74,22 @@ const EmployeeDashboard = ({ data }) => {
   };
 
   useEffect(() => {
-    if (isModalOpen) {
+    if (modalOpenRef.current) {
       return;
     }
 
     fetchEmployee();
-  }, [data.email, refreshKey, isModalOpen]);
+  }, [data.email, refreshKey]);
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
-      if (!isModalOpen) {
+      if (!modalOpenRef.current) {
         fetchEmployee({ silent: true });
       }
     }, 45_000);
 
     return () => window.clearInterval(intervalId);
-  }, [isModalOpen, data.email]);
+  }, [data.email]);
 
   useEffect(() => {
     if (!ENABLE_REALTIME) {
@@ -93,10 +101,43 @@ const EmployeeDashboard = ({ data }) => {
     socket.on("employeeUpdated", ({ email, employee }) => {
       if (email === data.email) {
         setEmployee(employee);
-        if (!isModalOpen) {
-          setRefreshKey((prev) => prev + 1);
-        }
       }
+    });
+
+    socket.on("taskCreated", ({ email, task }) => {
+      if (
+        String(email || "").toLowerCase() !==
+          String(data.email || "").toLowerCase() ||
+        !task
+      ) {
+        return;
+      }
+      setEmployee((prev) => {
+        if (!prev) return prev;
+        const taskId = String(task._id || "");
+        const alreadyExists = (prev.tasks || []).some((existingTask) => {
+          if (taskId && String(existingTask._id || "") === taskId) return true;
+          return (
+            existingTask.taskTitle === task.taskTitle &&
+            existingTask.taskDate === task.taskDate &&
+            existingTask.taskDescription === task.taskDescription
+          );
+        });
+        const tasks = alreadyExists
+          ? (prev.tasks || []).map((existingTask) => {
+              const sameId =
+                taskId && String(existingTask._id || "") === taskId;
+              const sameFallback =
+                existingTask.taskTitle === task.taskTitle &&
+                existingTask.taskDate === task.taskDate &&
+                existingTask.taskDescription === task.taskDescription;
+              return sameId || sameFallback
+                ? { ...existingTask, ...task }
+                : existingTask;
+            })
+          : [...(prev.tasks || []), task];
+        return { ...prev, tasks, taskCounts: computeTaskCounts(tasks) };
+      });
     });
 
     socket.on(
@@ -109,9 +150,32 @@ const EmployeeDashboard = ({ data }) => {
     );
 
     return () => socket.disconnect();
-  }, [data.email, isModalOpen]);
+  }, [data.email]);
 
-  const handleAccept = () => setRefreshKey((prev) => prev + 1);
+  const handleAccept = (payload) => {
+    if (payload?.updatedTask) {
+      setEmployee((prev) => {
+        if (!prev) return prev;
+        const updatedTask = payload.updatedTask;
+        const updatedTaskId = String(updatedTask._id || payload.taskId || "");
+        const tasks = (prev.tasks || []).map((task) => {
+          const sameId =
+            updatedTaskId && String(task._id || "") === updatedTaskId;
+          const sameFallback =
+            task.taskTitle === updatedTask.taskTitle &&
+            task.taskDate === updatedTask.taskDate &&
+            task.taskDescription === updatedTask.taskDescription;
+          return sameId || sameFallback ? { ...task, ...updatedTask } : task;
+        });
+        return { ...prev, tasks, taskCounts: computeTaskCounts(tasks) };
+      });
+      return;
+    }
+    setRefreshKey((prev) => prev + 1);
+  };
+  const handleModalStateChange = (isOpen) => {
+    modalOpenRef.current = Boolean(isOpen);
+  };
 
   const focusTasks = useMemo(() => {
     const tasks = (employee?.tasks || [])
@@ -368,10 +432,21 @@ const EmployeeDashboard = ({ data }) => {
             onAccept={handleAccept}
             vertical
             theme={theme}
-            onModalStateChange={setIsModalOpen}
+            onModalStateChange={handleModalStateChange}
           />
         </div>
       </div>
+      <TaskChatDock
+        tasks={employee?.tasks || []}
+        user={{
+          name: [employee?.firstName, employee?.lastName]
+            .filter(Boolean)
+            .join(" "),
+          email: employee?.email,
+          role: employee?.role || "employee",
+        }}
+        theme={theme}
+      />
     </div>
   );
 };

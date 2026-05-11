@@ -17,6 +17,7 @@ import {
   REALTIME_SOCKET_OPTIONS,
   REALTIME_SOCKET_URL,
 } from "../../lib/realtime";
+import ActionableInsightList from "../ActionableInsightList";
 
 const API_URL = `${import.meta.env.VITE_API_URL || ""}/api`;
 
@@ -296,13 +297,14 @@ const AdminEmployeeProductivity = ({ employee, theme = "dark" }) => {
           <h4
             className={`font-semibold mb-1 ${theme === "dark" ? "text-white" : "text-gray-900"}`}
           >
-            AI Insights:
+            Quick Actions:
           </h4>
-          <ul className="list-disc list-inside space-y-1">
-            {insights.map((msg, idx) => (
-              <li key={idx}>{msg}</li>
-            ))}
-          </ul>
+          <ActionableInsightList
+            items={insights}
+            limit={4}
+            theme={theme}
+            source="AI"
+          />
         </div>
       )}
     </div>

@@ -41,7 +41,7 @@ Return a **compact JSON object** ONLY, no additional text, in the exact format:
 {
   "summary": "2-3 complete sentences explaining the task in plain, encouraging language with context and expected outcome.",
   "steps": ["at least 3 practical, sequential steps with verbs and specifics", "...", "...", "..."],
-  "estimated_time": "human-readable time estimate, e.g. '30–45 minutes including testing'"
+  "estimated_time": "human-readable time estimate, e.g. '30-45 minutes including testing'"
 }
 
 CRITICAL REQUIREMENTS:
@@ -57,6 +57,52 @@ Metadata (may be partial):
 - category: ${metadata?.category || "n/a"}
 - complexity: ${metadata?.complexity ?? "n/a"}
 - estimatedDurationMinutes: ${metadata?.estimatedDuration ?? "n/a"}
+  `.trim();
+}
+
+export function buildGroupExplainTaskPrompt({
+  title,
+  description,
+  metadata,
+  members = [],
+}) {
+  const membersText = members
+    .map((member, idx) => {
+      const summary = String(member.summary || "").trim();
+      const summaryText = summary ? ` - recent: ${summary}` : "";
+      return `${idx + 1}. ${member.name} (${member.role || "employee"})${summaryText}`;
+    })
+    .join("\n");
+
+  return `
+You are coordinating a GROUP task across multiple employees.
+
+Return a **compact JSON object** ONLY, no additional text, in the exact format:
+{
+  "summary": "2-3 complete sentences explaining the task in plain, encouraging language with context and expected outcome.",
+  "steps": [
+    { "text": "specific step", "assigned_to": "Employee Name" },
+    { "text": "specific step", "assigned_to": "Employee Name" }
+  ],
+  "estimated_time": "human-readable time estimate, e.g. '30-45 minutes including testing'"
+}
+
+CRITICAL REQUIREMENTS:
+- Each step MUST include an assigned_to value.
+- assigned_to MUST match one of the employee names EXACTLY as provided below.
+- Distribute work across ALL employees; ensure each employee gets at least one step if possible.
+- Keep steps concise, actionable, and non-overlapping.
+- The summary must be 2-3 complete sentences, not cut off.
+
+Task title: ${title || ""}
+Task description: ${description || ""}
+Metadata (may be partial):
+- category: ${metadata?.category || "n/a"}
+- complexity: ${metadata?.complexity ?? "n/a"}
+- estimatedDurationMinutes: ${metadata?.estimatedDuration ?? "n/a"}
+
+Employees:
+${membersText || "No employees provided"}
   `.trim();
 }
 
@@ -112,7 +158,7 @@ export function buildRuleBasedTaskGuidance({ title, description, metadata }) {
   const durationText =
     Number.isFinite(estimatedDuration) && estimatedDuration > 0
       ? `${estimatedDuration} minutes`
-      : "30–60 minutes";
+      : "30-60 minutes";
 
   const summary = safeDescription
     ? `Focus on ${safeTitle} in the ${category} category. Keep scope clear, execute step-by-step, and confirm the expected output before marking progress complete.`
@@ -120,7 +166,7 @@ export function buildRuleBasedTaskGuidance({ title, description, metadata }) {
 
   const steps = [
     `Clarify the expected outcome for "${safeTitle}" and list the key acceptance points before starting.`,
-    "Break the work into 2–4 small checkpoints and complete the highest-impact checkpoint first.",
+    "Break the work into 2-4 small checkpoints and complete the highest-impact checkpoint first.",
     "Update progress after each checkpoint and resolve blockers immediately to avoid delay accumulation.",
     "Do a final quality pass against the task description and submit a concise completion update.",
   ];

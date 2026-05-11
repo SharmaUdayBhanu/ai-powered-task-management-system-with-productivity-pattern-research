@@ -11,6 +11,7 @@ import {
 import {
   buildPriorityPrompt,
   buildExplainTaskPrompt,
+  buildGroupExplainTaskPrompt,
   buildRuleBasedTaskGuidance,
 } from "./geminiPrompts.js";
 
@@ -19,28 +20,380 @@ const router = express.Router();
 const explainInFlight = new Map();
 const explainCooldownUntil = new Map();
 
-const getTaskLookupKey = ({ employeeEmail, taskId, taskLookup, title }) =>
-  [
+const getTaskLookupKey = ({
+  employeeEmail,
+  taskId,
+  taskLookup,
+  title,
+  groupId,
+}) => {
+  if (groupId) {
+    return ["group", groupId].join("::");
+  }
+
+  return [
     employeeEmail || "unknown",
     taskId || "",
     taskLookup?.taskTitle || title || "",
     taskLookup?.taskDate || "",
   ].join("::");
+};
 
 const getExistingTaskExplanation = (task) => {
-  if (!task?.explainSummary) return null;
+  const hasGroupAssignments =
+    Array.isArray(task?.groupStepAssignments) &&
+    task.groupStepAssignments.length > 0;
+  const hasExplainSteps =
+    Array.isArray(task?.explainSteps) && task.explainSteps.length > 0;
+  const hasSummary = Boolean(task?.explainSummary);
+
+  if (!hasSummary && !hasExplainSteps && !hasGroupAssignments) return null;
   return {
-    summary: task.explainSummary,
+    summary: task.explainSummary || "Task guidance is available.",
     steps: Array.isArray(task.explainSteps) ? task.explainSteps : [],
     estimated_time: task.explainEstimatedTime || "N/A",
+    stepAssignments: hasGroupAssignments ? task.groupStepAssignments : [],
+    stepChecks: Array.isArray(task.explainStepChecks)
+      ? task.explainStepChecks
+      : [],
+    source: task.explainSource || "AI",
     fromCache: true,
   };
+};
+
+const assignGroupSteps = ({ steps = [], members = [] }) => {
+  if (!steps.length || !members.length) return [];
+
+  const normalizedMembers = members.map((member) => ({
+    ...member,
+    profile: String(member.role || "")
+      .toLowerCase()
+      .trim(),
+  }));
+
+  const scoreMemberForStep = (stepText, member) => {
+    const lower = String(stepText || "").toLowerCase();
+    const profile = member.profile || "";
+    let score = 0;
+
+    if (/design|wireframe|visual|ui|ux/.test(lower)) {
+      score += /design|ui|ux/.test(profile) ? 3 : 0;
+    }
+    if (/data|metric|report|analysis|dashboard/.test(lower)) {
+      score += /analytic|data/.test(profile) ? 3 : 0;
+    }
+    if (/test|qa|verify|bug/.test(lower)) {
+      score += /quality|qa|test/.test(profile) ? 3 : 0;
+    }
+    if (/plan|coordinate|review|stakeholder/.test(lower)) {
+      score += /manager|coordination|lead|owner/.test(profile) ? 3 : 0;
+    }
+    if (/code|api|build|implement|develop/.test(lower)) {
+      score += /dev|engineer|developer|development/.test(profile) ? 3 : 0;
+    }
+
+    if (score === 0) {
+      score += /intern|assistant|support/.test(profile) ? 1 : 0;
+    }
+
+    return score;
+  };
+
+  const assignments = steps.map((step, idx) => {
+    let bestIndex = idx % normalizedMembers.length;
+    let bestScore = -1;
+    normalizedMembers.forEach((member, memberIdx) => {
+      const score = scoreMemberForStep(step, member);
+      if (score > bestScore) {
+        bestScore = score;
+        bestIndex = memberIdx;
+      }
+    });
+
+    const chosen = normalizedMembers[bestIndex];
+    return {
+      step,
+      assignedEmail: chosen.email,
+      assignedName: chosen.name || chosen.email,
+      completed: false,
+    };
+  });
+
+  const memberAssignmentCounts = normalizedMembers.reduce((acc, member) => {
+    acc[member.email] = 0;
+    return acc;
+  }, {});
+
+  assignments.forEach((assignment) => {
+    if (assignment.assignedEmail in memberAssignmentCounts) {
+      memberAssignmentCounts[assignment.assignedEmail] += 1;
+    }
+  });
+
+  const membersWithoutAssignments = normalizedMembers.filter(
+    (member) => memberAssignmentCounts[member.email] === 0,
+  );
+
+  if (membersWithoutAssignments.length && steps.length >= members.length) {
+    membersWithoutAssignments.forEach((member, memberIdx) => {
+      let reassigned = false;
+      for (let i = 0; i < assignments.length; i += 1) {
+        const currentAssignee = assignments[i].assignedEmail;
+        if (memberAssignmentCounts[currentAssignee] > 1) {
+          assignments[i] = {
+            ...assignments[i],
+            assignedEmail: member.email,
+            assignedName: member.name || member.email,
+          };
+          memberAssignmentCounts[currentAssignee] -= 1;
+          memberAssignmentCounts[member.email] += 1;
+          reassigned = true;
+          break;
+        }
+      }
+
+      if (!reassigned) {
+        const fallbackIndex = memberIdx % assignments.length;
+        const fallbackCurrent = assignments[fallbackIndex].assignedEmail;
+        assignments[fallbackIndex] = {
+          ...assignments[fallbackIndex],
+          assignedEmail: member.email,
+          assignedName: member.name || member.email,
+        };
+        if (memberAssignmentCounts[fallbackCurrent] > 0) {
+          memberAssignmentCounts[fallbackCurrent] -= 1;
+        }
+        memberAssignmentCounts[member.email] += 1;
+      }
+    });
+  }
+
+  return assignments;
+};
+
+const normalizeMemberName = (value) =>
+  String(value || "")
+    .trim()
+    .toLowerCase();
+
+const buildMemberHistorySummary = (employee = {}) => {
+  const tasks = Array.isArray(employee.tasks) ? employee.tasks : [];
+  const candidates = tasks
+    .filter(
+      (task) => task && !task.isDeleted && (task.completed || task.active),
+    )
+    .sort((a, b) => {
+      const aTs = new Date(
+        a.completedAt || a.startedAt || a.assignedAt || 0,
+      ).getTime();
+      const bTs = new Date(
+        b.completedAt || b.startedAt || b.assignedAt || 0,
+      ).getTime();
+      return bTs - aTs;
+    })
+    .slice(0, 2)
+    .map((task) => String(task.taskTitle || "").trim())
+    .filter(Boolean);
+
+  if (!candidates.length) return "";
+  const summary = candidates.join("; ");
+  return summary.length > 120 ? `${summary.slice(0, 117)}...` : summary;
+};
+
+const resolveAssigneeByName = (assignedTo, members = []) => {
+  const normalizedAssigned = normalizeMemberName(assignedTo);
+  if (!normalizedAssigned) return null;
+
+  const exact = members.find((member) => {
+    const name = normalizeMemberName(member.name);
+    const email = normalizeMemberName(member.email);
+    return name === normalizedAssigned || email === normalizedAssigned;
+  });
+  if (exact) return exact;
+
+  const assignedTokens = normalizedAssigned.split(/\s+/).filter(Boolean);
+  const partial = members.find((member) => {
+    const nameTokens = normalizeMemberName(member.name)
+      .split(/\s+/)
+      .filter(Boolean);
+    return assignedTokens.some((token) => nameTokens.includes(token));
+  });
+
+  return partial || null;
+};
+
+const scoreRoleMatch = (text, role) => {
+  const lower = String(text || "").toLowerCase();
+  const roleText = String(role || "").toLowerCase();
+  let score = 0;
+
+  if (/design|wireframe|visual|ui|ux/.test(lower)) {
+    score += /design|ui|ux|designer/.test(roleText) ? 3 : 0;
+  }
+  if (/data|metric|report|analysis|dashboard/.test(lower)) {
+    score += /data|analytic|analyst/.test(roleText) ? 3 : 0;
+  }
+  if (/test|qa|verify|bug/.test(lower)) {
+    score += /qa|test|quality/.test(roleText) ? 3 : 0;
+  }
+  if (/plan|coordinate|review|stakeholder/.test(lower)) {
+    score += /manager|lead|coordination|owner/.test(roleText) ? 3 : 0;
+  }
+  if (/code|api|build|implement|develop/.test(lower)) {
+    score += /dev|engineer|developer|development/.test(roleText) ? 3 : 0;
+  }
+  if (/support|assist|documentation|update/.test(lower)) {
+    score += /intern|assistant|support/.test(roleText) ? 1 : 0;
+  }
+
+  return score;
+};
+
+const pickMemberByRole = (text, members = []) => {
+  let best = members[0] || null;
+  let bestScore = -1;
+  members.forEach((member) => {
+    const score = scoreRoleMatch(text, member.role);
+    if (score > bestScore) {
+      bestScore = score;
+      best = member;
+    }
+  });
+  return best;
+};
+
+const ensureAssignmentsCoverage = (assignments = [], members = []) => {
+  if (!assignments.length || !members.length) return assignments;
+  if (assignments.length < members.length) return assignments;
+
+  const counts = members.reduce((acc, member) => {
+    acc[member.email] = 0;
+    return acc;
+  }, {});
+
+  assignments.forEach((assignment) => {
+    if (assignment.assignedEmail in counts) {
+      counts[assignment.assignedEmail] += 1;
+    }
+  });
+
+  const unassignedMembers = members.filter(
+    (member) => counts[member.email] === 0,
+  );
+
+  unassignedMembers.forEach((member) => {
+    for (let i = 0; i < assignments.length; i += 1) {
+      const currentEmail = assignments[i].assignedEmail;
+      if (counts[currentEmail] > 1) {
+        counts[currentEmail] -= 1;
+        counts[member.email] += 1;
+        assignments[i] = {
+          ...assignments[i],
+          assignedEmail: member.email,
+          assignedName: member.name || member.email,
+        };
+        break;
+      }
+    }
+  });
+
+  return assignments;
+};
+
+const normalizeGroupAssignmentsFromAi = ({ steps = [], members = [] }) => {
+  if (!Array.isArray(steps) || !members.length) return [];
+
+  const assignments = steps
+    .map((step) => {
+      if (!step) return null;
+
+      if (typeof step === "string") {
+        const assignee = pickMemberByRole(step, members);
+        return assignee
+          ? {
+              step: step.trim(),
+              assignedEmail: assignee.email,
+              assignedName: assignee.name || assignee.email,
+              completed: false,
+            }
+          : null;
+      }
+
+      const text = String(
+        step.text || step.step || step.description || "",
+      ).trim();
+      if (!text) return null;
+
+      const assignedTo = String(
+        step.assigned_to ||
+          step.assignedTo ||
+          step.assigned ||
+          step.owner ||
+          "",
+      ).trim();
+
+      const matched = resolveAssigneeByName(assignedTo, members);
+      const fallback = matched || pickMemberByRole(text, members);
+      if (!fallback) return null;
+
+      return {
+        step: text,
+        assignedEmail: fallback.email,
+        assignedName: fallback.name || fallback.email,
+        completed: false,
+      };
+    })
+    .filter(Boolean);
+
+  return ensureAssignmentsCoverage(assignments, members);
+};
+
+const buildGroupMemberEstimates = ({ assignments = [], totalMinutes = 0 }) => {
+  if (!assignments.length || totalMinutes <= 0) return [];
+  const baseMinutes = Math.floor(totalMinutes / assignments.length);
+  let remainder = totalMinutes % assignments.length;
+  const totals = {};
+
+  assignments.forEach((assignment) => {
+    const allocation = baseMinutes + (remainder > 0 ? 1 : 0);
+    if (remainder > 0) remainder -= 1;
+    if (!assignment.assignedEmail) return;
+    totals[assignment.assignedEmail] =
+      (totals[assignment.assignedEmail] || 0) + allocation;
+  });
+
+  return Object.entries(totals).map(([email, estimatedMinutes]) => ({
+    email,
+    estimatedMinutes,
+  }));
 };
 
 const normalizeExplanationPayload = (payload, fallbackPayload) => {
   const summary = String(payload?.summary || "").trim();
   const steps = Array.isArray(payload?.steps)
-    ? payload.steps.map((step) => String(step || "").trim()).filter(Boolean)
+    ? payload.steps
+        .map((step) => {
+          if (typeof step === "string") {
+            const text = String(step || "").trim();
+            return text ? text : null;
+          }
+          if (step && typeof step === "object") {
+            const text = String(
+              step.text || step.step || step.description || "",
+            ).trim();
+            if (!text) return null;
+            const assignedTo = String(
+              step.assigned_to ||
+                step.assignedTo ||
+                step.assigned ||
+                step.owner ||
+                "",
+            ).trim();
+            return assignedTo ? { text, assigned_to: assignedTo } : { text };
+          }
+          return null;
+        })
+        .filter(Boolean)
     : [];
   const estimated_time = String(payload?.estimated_time || "").trim();
 
@@ -105,10 +458,109 @@ const persistTaskExplanation = async ({
   taskId,
   taskLookup,
   explanation,
+  groupId,
+  source = "AI",
 }) => {
   if (!employeeEmail) return null;
 
   let updatedEmployee = null;
+  let assignments = [];
+
+  if (groupId) {
+    const groupEmployees = await Employee.find({ "tasks.groupId": groupId });
+    const groupTask = groupEmployees
+      .flatMap((employee) => employee.tasks || [])
+      .find((task) => task.groupId === groupId);
+    const members = Array.isArray(groupTask?.groupMembers)
+      ? groupTask.groupMembers.map((member) => member.toObject?.() || member)
+      : [];
+
+    const existingExplanation = getExistingTaskExplanation(groupTask);
+    const resolvedSummary = existingExplanation?.summary || explanation.summary;
+    const resolvedSteps =
+      existingExplanation?.steps?.length > 0
+        ? existingExplanation.steps
+        : explanation.steps || [];
+    const resolvedEstimatedTime =
+      existingExplanation?.estimated_time || explanation.estimated_time;
+
+    const normalizedStepTexts = Array.isArray(resolvedSteps)
+      ? resolvedSteps
+          .map((step) => {
+            if (typeof step === "string") return step.trim();
+            if (step && typeof step === "object") {
+              return String(
+                step.text || step.step || step.description || "",
+              ).trim();
+            }
+            return "";
+          })
+          .filter(Boolean)
+      : [];
+
+    assignments =
+      existingExplanation?.stepAssignments?.length > 0
+        ? existingExplanation.stepAssignments
+        : Array.isArray(groupTask?.groupStepAssignments) &&
+            groupTask.groupStepAssignments.length > 0
+          ? groupTask.groupStepAssignments.map(
+              (item) => item.toObject?.() || item,
+            )
+          : normalizeGroupAssignmentsFromAi({
+              steps: resolvedSteps,
+              members,
+            });
+
+    if (!assignments.length && normalizedStepTexts.length > 0) {
+      assignments = assignGroupSteps({
+        steps: normalizedStepTexts,
+        members,
+      });
+    }
+
+    const totalMinutes =
+      parseEstimatedMinutes(resolvedEstimatedTime) ||
+      Number(groupTask?.estimatedDuration) ||
+      0;
+    const groupMemberEstimates = buildGroupMemberEstimates({
+      assignments,
+      totalMinutes,
+    });
+
+    const updatedEmployees = [];
+    for (const employee of groupEmployees) {
+      const task = employee.tasks.find(
+        (candidate) => candidate.groupId === groupId,
+      );
+      if (!task) continue;
+      task.explainSummary = resolvedSummary;
+      task.explainSteps = normalizedStepTexts || [];
+      task.explainEstimatedTime = resolvedEstimatedTime;
+      task.explainSource = groupTask?.explainSource || source;
+      task.groupStepAssignments = assignments;
+      task.groupMemberEstimates = groupMemberEstimates;
+      updatedEmployees.push(await employee.save());
+    }
+    return (
+      updatedEmployees.find((employee) => employee.email === employeeEmail) ||
+      updatedEmployees[0] ||
+      null
+    );
+  }
+
+  const normalizedSteps = Array.isArray(explanation.steps)
+    ? explanation.steps
+        .map((step) => {
+          if (typeof step === "string") return step.trim();
+          if (step && typeof step === "object") {
+            return String(
+              step.text || step.step || step.description || "",
+            ).trim();
+          }
+          return "";
+        })
+        .filter(Boolean)
+    : [];
 
   if (taskId) {
     updatedEmployee = await Employee.findOneAndUpdate(
@@ -116,8 +568,9 @@ const persistTaskExplanation = async ({
       {
         $set: {
           "tasks.$.explainSummary": explanation.summary,
-          "tasks.$.explainSteps": explanation.steps || [],
+          "tasks.$.explainSteps": normalizedSteps,
           "tasks.$.explainEstimatedTime": explanation.estimated_time,
+          "tasks.$.explainSource": source,
         },
       },
       { new: true },
@@ -139,12 +592,38 @@ const persistTaskExplanation = async ({
       {
         $set: {
           "tasks.$.explainSummary": explanation.summary,
-          "tasks.$.explainSteps": explanation.steps || [],
+          "tasks.$.explainSteps": normalizedSteps,
           "tasks.$.explainEstimatedTime": explanation.estimated_time,
+          "tasks.$.explainSource": source,
         },
       },
       { new: true },
     );
+  }
+
+  if (updatedEmployee && normalizedSteps.length > 0) {
+    const targetTask = taskId
+      ? updatedEmployee.tasks.id(taskId)
+      : updatedEmployee.tasks.find(
+          (candidate) =>
+            candidate.taskTitle === taskLookup?.taskTitle &&
+            candidate.taskDate === taskLookup?.taskDate &&
+            candidate.taskDescription === taskLookup?.taskDescription,
+        );
+
+    const existingChecks = Array.isArray(targetTask?.explainStepChecks)
+      ? targetTask.explainStepChecks
+      : [];
+    if (existingChecks.length !== normalizedSteps.length) {
+      const nextChecks = normalizedSteps.map((_, idx) =>
+        Boolean(existingChecks[idx]),
+      );
+      updatedEmployee = await Employee.findOneAndUpdate(
+        { email: employeeEmail, "tasks._id": targetTask?._id },
+        { $set: { "tasks.$.explainStepChecks": nextChecks } },
+        { new: true },
+      );
+    }
   }
 
   const suggestedMinutes = parseEstimatedMinutes(explanation?.estimated_time);
@@ -233,12 +712,20 @@ router.post("/priority", async (req, res) => {
 // POST /api/gemini/explain-task
 router.post("/explain-task", async (req, res) => {
   try {
-    const { employeeEmail, taskId, taskLookup, title, description, metadata } =
-      req.body;
+    const {
+      employeeEmail,
+      taskId,
+      taskLookup,
+      title,
+      description,
+      metadata,
+      groupId,
+    } = req.body;
 
     console.log("[Gemini][explain-task] Incoming payload:", {
       employeeEmail,
       taskId,
+      groupId,
       hasTitle: !!title,
       hasDescription: !!description,
       metadata,
@@ -255,6 +742,7 @@ router.post("/explain-task", async (req, res) => {
       taskId,
       taskLookup,
       title,
+      groupId,
     });
 
     const fallbackExplanation = buildRuleBasedTaskGuidance({
@@ -263,7 +751,17 @@ router.post("/explain-task", async (req, res) => {
       metadata,
     });
 
-    if (employeeEmail) {
+    let groupEmployees = null;
+    if (groupId) {
+      groupEmployees = await Employee.find({ "tasks.groupId": groupId });
+      const groupTask = groupEmployees
+        .flatMap((employee) => employee.tasks || [])
+        .find((task) => task.groupId === groupId);
+      const existing = getExistingTaskExplanation(groupTask);
+      if (existing) {
+        return res.json(existing);
+      }
+    } else if (employeeEmail) {
       const employee = await Employee.findOne({ email: employeeEmail });
       if (employee) {
         let task = null;
@@ -303,7 +801,21 @@ router.post("/explain-task", async (req, res) => {
       return res.json(inFlightResult);
     }
 
-    const prompt = buildExplainTaskPrompt({ title, description, metadata });
+    const prompt = groupId
+      ? buildGroupExplainTaskPrompt({
+          title,
+          description,
+          metadata,
+          members: (groupEmployees || []).map((employee) => ({
+            name:
+              [employee.firstName, employee.lastName]
+                .filter(Boolean)
+                .join(" ") || employee.email,
+            role: employee.role || "employee",
+            summary: buildMemberHistorySummary(employee),
+          })),
+        })
+      : buildExplainTaskPrompt({ title, description, metadata });
     const explainPromise = (async () => {
       let raw = "";
       let parsed = fallbackExplanation;
@@ -335,6 +847,7 @@ router.post("/explain-task", async (req, res) => {
         summary: parsed.summary,
         steps: parsed.steps || [],
         estimated_time: parsed.estimated_time,
+        source: usedFallback ? "System" : "AI",
         fromFallback: usedFallback,
         raw,
       };
@@ -346,7 +859,22 @@ router.post("/explain-task", async (req, res) => {
             taskId,
             taskLookup,
             explanation: parsed,
+            groupId,
+            source: usedFallback ? "System" : "AI",
           });
+
+          const responseTask =
+            groupId && updatedEmployee
+              ? updatedEmployee.tasks.find((task) => task.groupId === groupId)
+              : taskId && updatedEmployee
+                ? updatedEmployee.tasks.id(taskId)
+                : null;
+          if (responseTask?.groupStepAssignments?.length) {
+            responsePayload.stepAssignments = responseTask.groupStepAssignments;
+          }
+          if (Array.isArray(responseTask?.explainStepChecks)) {
+            responsePayload.stepChecks = responseTask.explainStepChecks;
+          }
 
           const ioInstance = req.app.get("io");
           if (ioInstance && updatedEmployee) {
@@ -386,6 +914,7 @@ router.post("/explain-task", async (req, res) => {
       taskId: req.body?.taskId,
       taskLookup: req.body?.taskLookup,
       title: req.body?.title,
+      groupId: req.body?.groupId,
     });
     const fallbackExplanation = buildRuleBasedTaskGuidance({
       title: req.body?.title,
@@ -406,6 +935,104 @@ router.post("/explain-task", async (req, res) => {
     recordAiFallback("geminiRoutes.explain-task-top-level-error");
     return res.json({
       ...fallbackExplanation,
+      fromFallback: true,
+    });
+  }
+});
+
+router.post("/task-assistant", async (req, res) => {
+  try {
+    const { question, task } = req.body || {};
+    const conversationHistory = Array.isArray(req.body?.conversationHistory)
+      ? req.body.conversationHistory
+      : [];
+    const promptQuestion = String(question || "").trim();
+    if (!promptQuestion) {
+      return res.status(400).json({ error: "Question is required" });
+    }
+
+    const taskTitle = String(task?.title || task?.taskTitle || "").trim();
+    const taskDescription = String(
+      task?.description || task?.taskDescription || "",
+    ).trim();
+    const steps = Array.isArray(task?.steps) ? task.steps : [];
+    const assignments = Array.isArray(task?.assignments)
+      ? task.assignments
+      : [];
+    const members = Array.isArray(task?.members) ? task.members : [];
+
+    const contextLines = [
+      `Title: ${taskTitle || "N/A"}`,
+      `Description: ${taskDescription || "N/A"}`,
+      `Subtasks: ${
+        steps.length
+          ? steps.map((step, idx) => `${idx + 1}. ${step}`).join(" | ")
+          : "None"
+      }`,
+      `Assignments: ${
+        assignments.length
+          ? assignments
+              .map(
+                (item) =>
+                  `${item.step || item.text || ""} -> ${
+                    item.assignedName || item.assignedEmail || "Unassigned"
+                  }`,
+              )
+              .join(" | ")
+          : "None"
+      }`,
+      `Assigned members: ${
+        members.length
+          ? members.map((member) => member.name || member.email).join(", ")
+          : "None"
+      }`,
+    ];
+    const historyLines = conversationHistory
+      .slice(-14)
+      .map((item) => {
+        const role =
+          item?.role === "assistant" || item?.name === "Savy"
+            ? "Savy"
+            : item?.name || "User";
+        return `${role}: ${String(item?.message || "").slice(0, 1200)}`;
+      })
+      .filter((line) => line.trim() && !line.endsWith(": "));
+
+    const prompt = [
+      "You are Savy, an AI task assistant embedded in a team task chat.",
+      "Provide short, direct answers. Do not create new tasks or new requirements.",
+      "Only assist with the given task context and existing subtasks.",
+      "Use the conversation history to preserve continuity. If the user refers to earlier messages, resolve that reference from the history.",
+      "",
+      "Task context:",
+      ...contextLines,
+      "",
+      "Conversation history:",
+      ...(historyLines.length ? historyLines : ["No previous messages."]),
+      "",
+      `User question: ${promptQuestion}`,
+      "",
+      "Answer in 2-4 sentences, plain text.",
+    ].join("\n");
+
+    const raw = await callGemini(prompt, {
+      maxRetries: 1,
+      baseDelayMs: 2000,
+      context: "task-assistant",
+      lockKey: `task-assistant:${taskTitle}:${promptQuestion.slice(0, 32)}`,
+    });
+
+    const answer =
+      String(raw || "").trim() ||
+      "I can help clarify the task, but I need a more specific question.";
+
+    return res.json({ answer });
+  } catch (err) {
+    console.error("Task assistant error:", err);
+    recordAiFallback("geminiRoutes.task-assistant");
+    return res.json({
+      answer:
+        "AI assistance is temporarily unavailable. Please retry in a moment.",
       fromFallback: true,
     });
   }

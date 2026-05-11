@@ -1,4 +1,5 @@
 import React from "react";
+import ActionableInsightList from "../ActionableInsightList";
 
 const AdminProductivityLeaderboard = ({
   leaderboard = [],
@@ -178,13 +179,14 @@ const AdminProductivityLeaderboard = ({
                     >
                       📋 Recommendations:
                     </span>
-                    <ul
-                      className={`text-xs mt-1 list-disc list-inside space-y-1 ${theme === "dark" ? "text-gray-300" : "text-gray-700"}`}
-                    >
-                      {aiInsights.recommendations.map((tip, idx) => (
-                        <li key={idx}>{tip}</li>
-                      ))}
-                    </ul>
+                    <div className="mt-2">
+                      <ActionableInsightList
+                        items={aiInsights.recommendations}
+                        limit={5}
+                        theme={theme}
+                        source="AI"
+                      />
+                    </div>
                   </div>
                 )}
             </div>

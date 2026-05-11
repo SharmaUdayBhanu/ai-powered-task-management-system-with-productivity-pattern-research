@@ -3,12 +3,15 @@ import React, { useState } from "react";
 const Login = ({
   handleLogin,
   handleSignup,
+  onForgotPassword,
   errorMessage = "",
   loading = false,
 }) => {
   const [mode, setMode] = useState("signin");
   const [signinEmail, setSigninEmail] = useState("");
   const [signinPassword, setSigninPassword] = useState("");
+  const [showSigninPassword, setShowSigninPassword] = useState(false);
+  const [forgotMessage, setForgotMessage] = useState("");
   const [signupEmail, setSignupEmail] = useState("");
   const [signupPassword, setSignupPassword] = useState("");
   const [signupConfirmPassword, setSignupConfirmPassword] = useState("");
@@ -16,6 +19,17 @@ const Login = ({
   const handleSigninSubmit = (e) => {
     e.preventDefault();
     handleLogin(signinEmail, signinPassword);
+  };
+
+  const handleForgotPassword = () => {
+    if (typeof onForgotPassword === "function") {
+      onForgotPassword(signinEmail, setForgotMessage);
+      return;
+    }
+
+    setForgotMessage(
+      "Please contact your administrator to reset your password.",
+    );
   };
 
   const handleSignupSubmit = (e) => {
@@ -66,15 +80,69 @@ const Login = ({
                 required
               />
             </div>
-            <div>
+            <div className="relative">
               <input
-                type="password"
+                type={showSigninPassword ? "text" : "password"}
                 value={signinPassword}
                 onChange={(e) => setSigninPassword(e.target.value)}
-                className="w-full px-4 py-2 border-b border-gray-300 focus:outline-none focus:border-black bg-transparent"
+                className="w-full px-4 py-2 pr-10 border-b border-gray-300 focus:outline-none focus:border-black bg-transparent"
                 placeholder="password"
                 required
               />
+              <button
+                type="button"
+                onClick={() => setShowSigninPassword((prev) => !prev)}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-800"
+                aria-label={
+                  showSigninPassword ? "Hide password" : "Show password"
+                }
+                title={showSigninPassword ? "Hide password" : "Show password"}
+              >
+                {showSigninPassword ? (
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    className="h-5 w-5"
+                    aria-hidden="true"
+                  >
+                    <path d="M2.5 12s3.5-7 9.5-7 9.5 7 9.5 7-3.5 7-9.5 7-9.5-7-9.5-7Z" />
+                    <circle cx="12" cy="12" r="3.5" />
+                  </svg>
+                ) : (
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    className="h-5 w-5"
+                    aria-hidden="true"
+                  >
+                    <path d="M2.5 12s3.5-7 9.5-7 9.5 7 9.5 7-3.5 7-9.5 7-9.5-7-9.5-7Z" />
+                    <circle cx="12" cy="12" r="3.5" />
+                    <path d="M4 20L20 4" />
+                  </svg>
+                )}
+              </button>
+            </div>
+            <div className="flex items-center justify-between text-xs">
+              <button
+                type="button"
+                onClick={handleForgotPassword}
+                className="text-gray-600 hover:text-black"
+              >
+                Forgot password?
+              </button>
+              {forgotMessage && (
+                <span className="text-gray-500">{forgotMessage}</span>
+              )}
             </div>
             {errorMessage && (
               <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">

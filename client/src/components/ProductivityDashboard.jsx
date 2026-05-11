@@ -17,6 +17,7 @@ import {
   REALTIME_SOCKET_OPTIONS,
   REALTIME_SOCKET_URL,
 } from "../lib/realtime";
+import ActionableInsightList from "./ActionableInsightList";
 
 const ProductivityDashboard = ({ employee, theme = "dark" }) => {
   const [stats, setStats] = useState(null);
@@ -404,24 +405,19 @@ const ProductivityDashboard = ({ employee, theme = "dark" }) => {
                 }`}
               >
                 <p className="text-xs font-semibold uppercase tracking-wide opacity-70">
-                  Why this matters
+                  Quick actions
                 </p>
-                <ul
-                  className={`mt-2 list-disc list-inside text-xs space-y-1 ${
-                    theme === "dark" ? "text-gray-300" : "text-gray-700"
-                  }`}
-                >
-                  {(insights.length
-                    ? insights
-                    : [
-                        "Your completion consistency shapes your weekly score and workload confidence.",
-                      ]
-                  )
-                    .slice(0, 3)
-                    .map((msg, idx) => (
-                      <li key={idx}>{msg}</li>
-                    ))}
-                </ul>
+                <div className="mt-2">
+                  <ActionableInsightList
+                    items={insights}
+                    fallbackItems={[
+                      "Your completion consistency shapes your weekly score and workload confidence.",
+                    ]}
+                    limit={3}
+                    theme={theme}
+                    source={analysis?.source || (analysis ? "AI" : "System")}
+                  />
+                </div>
               </div>
               <div
                 className={`rounded-lg border p-3 ${
@@ -433,23 +429,19 @@ const ProductivityDashboard = ({ employee, theme = "dark" }) => {
                 <p className="text-xs font-semibold uppercase tracking-wide opacity-70">
                   Risk signals
                 </p>
-                <ul
-                  className={`mt-2 list-disc list-inside text-xs space-y-1 ${
-                    theme === "dark" ? "text-gray-300" : "text-gray-700"
-                  }`}
-                >
-                  {(
-                    analysis?.riskSignals || [
+                <div className="mt-2">
+                  <ActionableInsightList
+                    items={analysis?.riskSignals || []}
+                    fallbackItems={[
                       "Start your highest-priority task in your peak hour window.",
                       "Keep daily completion cadence above your previous 7-day average.",
                       "Review one delayed task cause and create a prevention step.",
-                    ]
-                  )
-                    .slice(0, 3)
-                    .map((msg, idx) => (
-                      <li key={idx}>{msg}</li>
-                    ))}
-                </ul>
+                    ]}
+                    limit={3}
+                    theme={theme}
+                    source={analysis?.source || (analysis ? "AI" : "System")}
+                  />
+                </div>
               </div>
             </div>
 

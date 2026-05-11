@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Maximize2, X } from "lucide-react";
+import DataSourceBadge from "../DataSourceBadge";
 
 const TaskAIInsight = ({
   summary,
@@ -60,6 +61,7 @@ const TaskAIInsight = ({
         }`}
       >
         AI Guidance
+        <DataSourceBadge source="AI" />
       </p>
       <p
         className={`text-sm mt-1.5 leading-relaxed ${

@@ -23,15 +23,40 @@ const App = () => {
   const [authError, setAuthError] = useState("");
   const [authLoading, setAuthLoading] = useState(false);
 
-  useEffect(() => {
+  const applyStoredUser = () => {
     const loggedInUser = localStorage.getItem("loggedInUser");
-    if (!loggedInUser) return;
+    if (!loggedInUser) {
+      setUser("");
+      setLoggedInUserData(null);
+      return;
+    }
 
     const userData = JSON.parse(loggedInUser);
     setUser(userData.role);
     if (userData.role === "employee") {
       setLoggedInUserData(userData.data || null);
+    } else {
+      setLoggedInUserData(null);
     }
+  };
+
+  useEffect(() => {
+    applyStoredUser();
+    const handleLogout = () => {
+      applyStoredUser();
+    };
+    const handleStorage = (event) => {
+      if (event.key === "loggedInUser") {
+        applyStoredUser();
+      }
+    };
+
+    window.addEventListener("auth:logout", handleLogout);
+    window.addEventListener("storage", handleStorage);
+    return () => {
+      window.removeEventListener("auth:logout", handleLogout);
+      window.removeEventListener("storage", handleStorage);
+    };
   }, []);
 
   const handleLogin = async (email, password) => {
