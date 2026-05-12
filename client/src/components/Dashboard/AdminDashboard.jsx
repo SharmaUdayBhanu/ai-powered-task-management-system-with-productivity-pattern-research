@@ -23,6 +23,7 @@ import {
   REALTIME_SOCKET_URL,
 } from "../../lib/realtime";
 import ActionableInsightList from "../ActionableInsightList";
+import DataSourceBadge from "../DataSourceBadge";
 
 const toPercent = (value, base) => {
   const safeBase = Number(base) || 0;
@@ -921,10 +922,12 @@ const AdminDashboard = () => {
       const memberEmail = String(member.email || "").toLowerCase();
       setEmployees((prev) =>
         prev.map((employee) => {
+          const empEmail = String(employee.email || "").toLowerCase();
           const tasks = (employee.tasks || []).map((entry) => {
             if (entry.groupId !== task.groupId) return entry;
             if (!Array.isArray(entry.groupMemberEstimates)) return entry;
             const updated = { ...entry };
+            const wasFailed = Boolean(entry.failed);
             updated.groupMemberEstimates = entry.groupMemberEstimates.map(
               (estimate) => {
                 if (
@@ -941,7 +944,15 @@ const AdminDashboard = () => {
                 };
               },
             );
-            if (updated.failed) {
+            if (empEmail === memberEmail && wasFailed) {
+              const row = updated.groupMemberEstimates.find(
+                (e) =>
+                  String(e?.email || "").toLowerCase() === memberEmail,
+              );
+              const mins = Number(row?.estimatedMinutes);
+              if (Number.isFinite(mins) && mins > 0) {
+                updated.estimatedDuration = Math.round(mins);
+              }
               updated.failed = false;
               updated.completed = false;
               updated.active = true;
@@ -1089,6 +1100,9 @@ const AdminDashboard = () => {
               : timeProgressPercent;
 
           const isOverdue = remainingMs !== null && remainingMs < 0;
+          const statusLabel = isOverdue ? "Failed" : "Active";
+          const displayProgressPercent =
+            statusLabel === "Failed" ? 0 : progressPercent;
           singleTasks.push({
             id: task._id || `${task.taskTitle}-${task.taskDate}`,
             taskId: task._id,
@@ -1104,9 +1118,10 @@ const AdminDashboard = () => {
             completedSteps,
             totalSteps: steps.length,
             progressPercent,
+            displayProgressPercent,
             remainingMs,
             estimatedMinutes,
-            statusLabel: isOverdue ? "Failed" : "Active",
+            statusLabel,
             updatedAt: task.completedAt || task.submittedAt || task.startedAt,
           });
         } else if (isPending && !task?.completed && !task?.failed) {
@@ -1191,6 +1206,7 @@ const AdminDashboard = () => {
             memberTotalMs > 0 && memberStartMs
               ? memberTotalMs - Math.max(0, nowMs - memberStartMs)
               : null;
+          const memberTaskFailed = Boolean(memberTask?.failed);
 
           return {
             email,
@@ -1202,8 +1218,10 @@ const AdminDashboard = () => {
             assignments: memberAssignments,
             completedCount: memberCompleted,
             percent: memberPercent,
+            displayPercent: memberTaskFailed ? 0 : memberPercent,
             remainingMs: memberRemainingMs,
             estimatedMinutes: memberEstimate,
+            taskFailed: memberTaskFailed,
           };
         });
 
@@ -1221,6 +1239,7 @@ const AdminDashboard = () => {
           ? Math.max(...remainingCandidates)
           : null;
         const isOverdue = overallRemainingMs !== null && overallRemainingMs < 0;
+        const displayOverallPercent = hasFailed ? 0 : overallPercent;
 
         return {
           groupId: entry.groupId,
@@ -1230,6 +1249,7 @@ const AdminDashboard = () => {
           totalSteps,
           completedSteps,
           overallPercent,
+          displayOverallPercent,
           members,
           overallRemainingMs,
           groupAcceptedEmails: entry.groupAcceptedEmails,
@@ -1289,6 +1309,41 @@ const AdminDashboard = () => {
     }
     return `Team snapshot: ${topPerformer.name} is currently leading, while ${lowPerformer.name} needs additional support.`;
   }, [leaderboardData.aiInsights, topPerformer, lowPerformer]);
+
+  const adminInsightSource = useMemo(() => {
+    const engine = leaderboardData.insightEngine;
+    if (engine === "ai") return "AI";
+    if (engine === "cached") return "AI";
+    return "SYS";
+  }, [leaderboardData.insightEngine]);
+
+  const adminQuickPills = useMemo(() => {
+    const ai = leaderboardData.aiInsights;
+    if (!ai) return [];
+    if (Array.isArray(ai.recommendationPills) && ai.recommendationPills.length) {
+      return ai.recommendationPills;
+    }
+    return Array.isArray(ai.recommendations) ? ai.recommendations : [];
+  }, [leaderboardData.aiInsights]);
+
+  const adminTeamPills = useMemo(() => {
+    const ai = leaderboardData.aiInsights;
+    if (!ai) return [];
+    if (Array.isArray(ai.teamDiagnosticPills) && ai.teamDiagnosticPills.length) {
+      return ai.teamDiagnosticPills;
+    }
+    if (Array.isArray(ai.teamDiagnostics) && ai.teamDiagnostics.length) {
+      return ai.teamDiagnostics;
+    }
+    const legacy = [
+      ai.teamPattern,
+      ai.workloadImbalance,
+      ai.failureClusters,
+      ...(ai.underutilizedEmployees || []),
+      ...(ai.changeSignals || []),
+    ].filter(Boolean);
+    return legacy;
+  }, [leaderboardData.aiInsights]);
 
   const handleAddEmployeeInput = (event) => {
     const { name, value } = event.target;
@@ -1884,6 +1939,10 @@ const AdminDashboard = () => {
                   const changeText =
                     aiSignal?.changeSignal ||
                     employee.cardSignalFallback.changeSignal;
+                  const patternIsAi = Boolean(aiSignal?.pattern);
+                  const riskIsAi = Boolean(aiSignal?.riskSignal);
+                  const specializationIsAi = Boolean(aiSignal?.specialization);
+                  const changeIsAi = Boolean(aiSignal?.changeSignal);
 
                   return (
                     <>
@@ -1928,9 +1987,13 @@ const AdminDashboard = () => {
                           </span>
                         ))}
                         <span
-                          className={`rounded-full px-2 py-1 text-[10px] font-semibold ${theme === "dark" ? "bg-emerald-500/15 text-emerald-300" : "bg-emerald-100 text-emerald-800"}`}
+                          className={`inline-flex items-center gap-0.5 rounded-full px-2 py-1 text-[10px] font-semibold ${theme === "dark" ? "bg-emerald-500/15 text-emerald-300" : "bg-emerald-100 text-emerald-800"}`}
                         >
                           {specializationText}
+                          <DataSourceBadge
+                            source={specializationIsAi ? "AI" : "SYS"}
+                            className="!text-[9px] opacity-80"
+                          />
                         </span>
                       </div>
 
@@ -1981,8 +2044,12 @@ const AdminDashboard = () => {
                       <div
                         className={`mt-3 rounded-md border p-2.5 text-[11px] ${employee.workloadStatus.className}`}
                       >
-                        <p className="font-semibold">
+                        <p className="inline-flex flex-wrap items-center gap-1 font-semibold">
                           Workload: {employee.workloadStatus.label}
+                          <DataSourceBadge
+                            source="SYS"
+                            className="!text-[9px] opacity-80"
+                          />
                         </p>
                         <p className="mt-1 opacity-85">
                           {employee.workloadStatus.detail}
@@ -2014,12 +2081,24 @@ const AdminDashboard = () => {
                         </ul>
                         <p className="mt-2 text-[11px] opacity-85">
                           Pattern: {patternText}
+                          <DataSourceBadge
+                            source={patternIsAi ? "AI" : "SYS"}
+                            className="inline"
+                          />
                         </p>
                         <p className="mt-1 text-[11px] opacity-85">
                           Risk signal: {riskText}
+                          <DataSourceBadge
+                            source={riskIsAi ? "AI" : "SYS"}
+                            className="inline"
+                          />
                         </p>
                         <p className="mt-1 text-[11px] opacity-85">
                           Change signal: {changeText}
+                          <DataSourceBadge
+                            source={changeIsAi ? "AI" : "SYS"}
+                            className="inline"
+                          />
                         </p>
                       </div>
 
@@ -2073,11 +2152,37 @@ const AdminDashboard = () => {
               <p className="text-xs opacity-70">Top performer (with reason)</p>
               <p className="font-semibold">{topPerformer?.name || "N/A"}</p>
               {topPerformer && (
-                <p className="mt-1 text-[11px] opacity-80">
-                  Score {topPerformer.productivityScore.toFixed(1)} • On-time{" "}
-                  {topPerformer.stats.onTimePercent.toFixed(1)}% • Avg{" "}
-                  {topPerformer.stats.averageCompletionTimeMinutes} min
-                </p>
+                <>
+                  <p className="mt-1 text-[11px] opacity-80">
+                    Score {topPerformer.productivityScore.toFixed(1)} • On-time{" "}
+                    {topPerformer.stats.onTimePercent.toFixed(1)}% • Avg{" "}
+                    {topPerformer.stats.averageCompletionTimeMinutes} min
+                  </p>
+                  {leaderboardData.aiInsights?.topPerformer && (
+                    <p
+                      className="mt-1 text-[11px] leading-snug opacity-85"
+                      title={leaderboardData.aiInsights.topPerformer}
+                    >
+                      {leaderboardData.aiInsights.topPerformer}
+                      <DataSourceBadge
+                        source={adminInsightSource}
+                        className="inline"
+                      />
+                    </p>
+                  )}
+                  {leaderboardData.aiInsights?.mostImproved && (
+                    <p
+                      className="mt-1 text-[11px] leading-snug opacity-85"
+                      title={leaderboardData.aiInsights.mostImproved}
+                    >
+                      Momentum: {leaderboardData.aiInsights.mostImproved}
+                      <DataSourceBadge
+                        source={adminInsightSource}
+                        className="inline"
+                      />
+                    </p>
+                  )}
+                </>
               )}
             </div>
             <div
@@ -2088,11 +2193,25 @@ const AdminDashboard = () => {
               </p>
               <p className="font-semibold">{lowPerformer?.name || "N/A"}</p>
               {lowPerformer && (
-                <p className="mt-1 text-[11px] opacity-80">
-                  Score {lowPerformer.productivityScore.toFixed(1)} • On-time{" "}
-                  {lowPerformer.stats.onTimePercent.toFixed(1)}% • Avg{" "}
-                  {lowPerformer.stats.averageCompletionTimeMinutes} min
-                </p>
+                <>
+                  <p className="mt-1 text-[11px] opacity-80">
+                    Score {lowPerformer.productivityScore.toFixed(1)} • On-time{" "}
+                    {lowPerformer.stats.onTimePercent.toFixed(1)}% • Avg{" "}
+                    {lowPerformer.stats.averageCompletionTimeMinutes} min
+                  </p>
+                  {leaderboardData.aiInsights?.needsAttention && (
+                    <p
+                      className="mt-1 text-[11px] leading-snug opacity-85"
+                      title={leaderboardData.aiInsights.needsAttention}
+                    >
+                      {leaderboardData.aiInsights.needsAttention}
+                      <DataSourceBadge
+                        source={adminInsightSource}
+                        className="inline"
+                      />
+                    </p>
+                  )}
+                </>
               )}
             </div>
           </div>
@@ -2103,42 +2222,26 @@ const AdminDashboard = () => {
             <p className="text-xs opacity-70">Quick actions</p>
             <div className="mt-2">
               <ActionableInsightList
-                items={leaderboardData.aiInsights?.recommendations || []}
+                items={adminQuickPills}
                 fallbackItems={fallbackRecommendations}
                 limit={5}
                 theme={theme}
-                source={
-                  leaderboardData.insightEngine === "ai" ? "AI" : "System"
-                }
+                source={adminInsightSource}
               />
             </div>
           </div>
 
-          {(leaderboardData.aiInsights?.teamPattern ||
-            leaderboardData.aiInsights?.workloadImbalance ||
-            leaderboardData.aiInsights?.failureClusters ||
-            (leaderboardData.aiInsights?.underutilizedEmployees || []).length >
-              0 ||
-            (leaderboardData.aiInsights?.changeSignals || []).length > 0) && (
+          {adminTeamPills.length > 0 && (
             <div
               className={`mt-3 max-h-[260px] overflow-y-auto rounded-lg p-3 ${theme === "dark" ? "bg-white/5" : "bg-gray-50"}`}
             >
               <p className="text-xs opacity-70">Team pattern analysis</p>
               <div className="mt-2">
                 <ActionableInsightList
-                  items={[
-                    leaderboardData.aiInsights?.teamPattern,
-                    leaderboardData.aiInsights?.workloadImbalance,
-                    leaderboardData.aiInsights?.failureClusters,
-                    ...(leaderboardData.aiInsights?.underutilizedEmployees ||
-                      []),
-                    ...(leaderboardData.aiInsights?.changeSignals || []),
-                  ].filter(Boolean)}
-                  limit={6}
+                  items={adminTeamPills}
+                  limit={8}
                   theme={theme}
-                  source={
-                    leaderboardData.insightEngine === "ai" ? "AI" : "System"
-                  }
+                  source={adminInsightSource}
                 />
               </div>
             </div>
@@ -2284,7 +2387,9 @@ const TaskMonitoringPanel = ({
                       )}
                     </div>
                     <div className="text-right text-[11px]">
-                      <p className="font-semibold">{task.overallPercent}%</p>
+                      <p className="font-semibold">
+                        {task.displayOverallPercent ?? task.overallPercent}%
+                      </p>
                       <p className="opacity-70">
                         {task.completedSteps}/{task.totalSteps || 0} subtasks
                       </p>
@@ -2311,7 +2416,12 @@ const TaskMonitoringPanel = ({
                   <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-black/20">
                     <div
                       className="h-full rounded-full bg-cyan-400"
-                      style={{ width: `${Math.max(4, task.overallPercent)}%` }}
+                      style={{
+                        width: `${Math.max(
+                          4,
+                          task.displayOverallPercent ?? task.overallPercent,
+                        )}%`,
+                      }}
                     />
                   </div>
 
@@ -2332,7 +2442,9 @@ const TaskMonitoringPanel = ({
                             </p>
                           </div>
                           <div className="text-right text-[11px]">
-                            <p className="font-semibold">{member.percent}%</p>
+                            <p className="font-semibold">
+                              {member.displayPercent ?? member.percent}%
+                            </p>
                             <p className="opacity-70">
                               {formatRemainingTime(member.remainingMs)}
                             </p>
@@ -2382,7 +2494,9 @@ const TaskMonitoringPanel = ({
                       )}
                     </div>
                     <div className="text-right text-[11px]">
-                      <p className="font-semibold">{task.progressPercent}%</p>
+                      <p className="font-semibold">
+                        {task.displayProgressPercent ?? task.progressPercent}%
+                      </p>
                       <p className="opacity-70">
                         {formatRemainingTime(task.remainingMs)}
                       </p>
@@ -2406,7 +2520,12 @@ const TaskMonitoringPanel = ({
                   <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-black/20">
                     <div
                       className="h-full rounded-full bg-emerald-400"
-                      style={{ width: `${Math.max(4, task.progressPercent)}%` }}
+                      style={{
+                        width: `${Math.max(
+                          4,
+                          task.displayProgressPercent ?? task.progressPercent,
+                        )}%`,
+                      }}
                     />
                   </div>
 

@@ -856,6 +856,36 @@ const enrichGroupTaskAiMetadataInBackground = async ({
   });
 };
 
+/**
+ * After an admin extends time, deadline-failed tasks should resume as active
+ * with a fresh completion window from "now".
+ */
+const reactivateTaskAfterExtension = (task, now = new Date()) => {
+  if (!task || task.completed) return false;
+  if (!task.failed) return false;
+  task.failed = false;
+  task.completed = false;
+  task.active = true;
+  task.completedAt = null;
+  task.onTime = true;
+  task.startedAt = now;
+  return true;
+};
+
+const syncEstimatedDurationFromMemberEstimate = (task, memberEmail) => {
+  if (!task || !memberEmail || !Array.isArray(task.groupMemberEstimates)) {
+    return;
+  }
+  const normalized = String(memberEmail).toLowerCase();
+  const row = task.groupMemberEstimates.find(
+    (e) => String(e?.email || "").toLowerCase() === normalized,
+  );
+  const mins = Number(row?.estimatedMinutes);
+  if (Number.isFinite(mins) && mins > 0) {
+    task.estimatedDuration = Math.round(mins);
+  }
+};
+
 const applyTaskTimeouts = (employeeOrUpdate) => {
   if (!employeeOrUpdate?.tasks || !Array.isArray(employeeOrUpdate.tasks)) {
     return false;
@@ -1899,6 +1929,7 @@ app.put("/api/employees/:email", async (req, res) => {
       // Force next insights request to recompute using fresh post-completion data.
       update.lastInsightUpdate = null;
       update.storedInsights = [];
+      update.storedInsightAnalysis = null;
     }
 
     applyTaskTimeouts(update);
@@ -2329,7 +2360,7 @@ app.post(
         });
       }
 
-      const isCompleting = !target.completed;
+      const isCompleting = req.body?.completed !== undefined ? Boolean(req.body.completed) : !target.completed;
       assignments[index] = {
         ...target,
         completed: isCompleting,
@@ -2337,22 +2368,28 @@ app.post(
         completedAt: isCompleting ? new Date() : null,
       };
 
-      const updated = [];
-      for (const employee of employees) {
-        const task = employee.tasks.find((item) => item.groupId === groupId);
+      const updatedEmployees = [];
+      for (const emp of employees) {
+        const task = emp.tasks.find((item) => item.groupId === groupId);
         if (!task) continue;
         task.groupStepAssignments = assignments;
-        await employee.save();
-        updated.push(employee);
+        await emp.save();
+        updatedEmployees.push(emp);
       }
 
+      const assignmentsUpdated = assignments;
+
       const ioInstance = req.app.get("io");
-      updated.forEach((employee) =>
+      updatedEmployees.forEach((emp) => {
         ioInstance?.emit("employeeUpdated", {
-          email: employee.email,
-          employee,
-        }),
-      );
+          email: emp.email,
+          employee: emp,
+        });
+        ioInstance?.emit("taskStatusChanged", {
+          email: emp.email,
+          employee: emp,
+        });
+      });
       if (isCompleting) {
         const systemMessage = buildChatMessage({
           senderName: "System",
@@ -2365,7 +2402,7 @@ app.post(
           ioInstance,
         });
       }
-      return res.json({ success: true, assignments, employees: updated });
+      return res.json({ success: true, assignments: assignmentsUpdated, employees: updatedEmployees });
     } catch (err) {
       console.error("Toggle group subtask error:", err);
       return res.status(500).json({ error: "Server error" });
@@ -2414,16 +2451,20 @@ app.post(
       const normalizedChecks = steps.map((_, idx) =>
         Boolean(currentChecks[idx]),
       );
-      const isCompleting = !normalizedChecks[index];
+      const isCompleting = req.body?.completed !== undefined ? Boolean(req.body.completed) : !normalizedChecks[index];
       normalizedChecks[index] = isCompleting;
       task.explainStepChecks = normalizedChecks;
+      
       await employee.save();
+      const updatedEmployee = employee;
+      const updatedTask = task;
+      const newNormalizedChecks = normalizedChecks;
 
       const ioInstance = req.app.get("io");
-      ioInstance?.emit("employeeUpdated", { email: employee.email, employee });
+      ioInstance?.emit("employeeUpdated", { email: updatedEmployee.email, employee: updatedEmployee });
       ioInstance?.emit("taskStatusChanged", {
-        email: employee.email,
-        employee,
+        email: updatedEmployee.email,
+        employee: updatedEmployee,
       });
       if (isCompleting) {
         const systemMessage = buildChatMessage({
@@ -2441,8 +2482,8 @@ app.post(
 
       return res.json({
         success: true,
-        stepChecks: normalizedChecks,
-        task,
+        stepChecks: newNormalizedChecks,
+        task: updatedTask,
       });
     } catch (err) {
       console.error("Toggle subtask error:", err);
@@ -2691,6 +2732,11 @@ app.post("/api/employees/:email/tasks/:taskId/extend", async (req, res) => {
       task.taskDate = nextDate.toISOString().slice(0, 10);
     }
 
+    const now = new Date();
+    reactivateTaskAfterExtension(task, now);
+    applyTaskTimeouts(employee);
+    employee.taskCounts = computeTaskCounts(employee.tasks);
+
     await employee.save();
     const ioInstance = req.app.get("io");
     ioInstance?.emit("employeeUpdated", { email: employee.email, employee });
@@ -2734,6 +2780,7 @@ app.post("/api/group-tasks/:groupId/extend", async (req, res) => {
     }
     const addedMinutes = Math.round(days * 24 * 60);
     const updated = [];
+    const now = new Date();
 
     for (const employee of employees) {
       const task = employee.tasks.find((item) => item.groupId === groupId);
@@ -2748,6 +2795,7 @@ app.post("/api/group-tasks/:groupId/extend", async (req, res) => {
         if (nextDate) {
           task.taskDate = nextDate.toISOString().slice(0, 10);
         }
+        reactivateTaskAfterExtension(task, now);
       }
 
       if (Array.isArray(task.groupMemberEstimates)) {
@@ -2766,17 +2814,32 @@ app.post("/api/group-tasks/:groupId/extend", async (req, res) => {
         });
       }
 
+      if (memberEmail) {
+        const empEmail = String(employee.email || "").toLowerCase();
+        if (empEmail === memberEmail) {
+          syncEstimatedDurationFromMemberEstimate(task, memberEmail);
+          reactivateTaskAfterExtension(task, now);
+        }
+      }
+
+      applyTaskTimeouts(employee);
+      employee.taskCounts = computeTaskCounts(employee.tasks);
+
       await employee.save();
       updated.push(employee);
     }
 
     const ioInstance = req.app.get("io");
-    updated.forEach((employee) =>
+    updated.forEach((employee) => {
       ioInstance?.emit("employeeUpdated", {
         email: employee.email,
         employee,
-      }),
-    );
+      });
+      ioInstance?.emit("taskStatusChanged", {
+        email: employee.email,
+        employee,
+      });
+    });
     ioInstance?.emit("taskStatusChanged", { groupId });
 
     const systemMessage = buildChatMessage({

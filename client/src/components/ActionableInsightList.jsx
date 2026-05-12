@@ -1,70 +1,28 @@
 import React from "react";
 import DataSourceBadge from "./DataSourceBadge";
 
-const getInsightAction = (message) => {
-  const text = String(message || "").trim();
-  const lower = text.toLowerCase();
+const inferTone = (text) => {
+  const lower = String(text || "").toLowerCase();
 
-  if (/overload|too many|workload|burnout|capacity|active tasks/.test(lower)) {
-    return {
-      label: "Reduce workload",
-      tone: "red",
-    };
+  if (/overload|too many|burnout|capacity|context-switch|queue|parallel/.test(lower)) {
+    return "red";
   }
-
-  if (/underutil|assign more|take more|more tasks|available|low workload/.test(lower)) {
-    return {
-      label: "Assign more tasks",
-      tone: "sky",
-    };
+  if (/underutil|low recent|bench|quiet week|no completions captured/.test(lower)) {
+    return "sky";
   }
-
-  if (/declin|drop|fall|risk|failed|failure|low completion|below|needs attention/.test(lower)) {
-    return {
-      label: "Performance declining",
-      tone: "amber",
-    };
+  if (/fail|risk|declin|drop|volatile|blocked|delay|late|deadline/.test(lower)) {
+    return "amber";
   }
-
-  if (/delay|late|deadline|overdue|blocker|handoff/.test(lower)) {
-    return {
-      label: "Fix delivery blockers",
-      tone: "amber",
-    };
+  if (/coach|support|training|mentor|review|checkpoint/.test(lower)) {
+    return "violet";
   }
-
-  if (/coach|support|training|mentor|review/.test(lower)) {
-    return {
-      label: "Coach employee",
-      tone: "violet",
-    };
+  if (/improv|strong|reliable|on-time|momentum|stable rhythm|win/.test(lower)) {
+    return "emerald";
   }
-
-  if (/improv|top performer|leading|strong|high|reliable|on-time|consistent delivery/.test(lower)) {
-    return {
-      label: "Reinforce strong performance",
-      tone: "emerald",
-    };
+  if (/priorit|focus|sequence|route|rebalance/.test(lower)) {
+    return "cyan";
   }
-
-  if (/stable|steady|normal|balanced|consistent/.test(lower)) {
-    return {
-      label: "Performance stable",
-      tone: "emerald",
-    };
-  }
-
-  if (/priority|prioritize|focus/.test(lower)) {
-    return {
-      label: "Prioritize key tasks",
-      tone: "cyan",
-    };
-  }
-
-  return {
-    label: "Review productivity signal",
-    tone: "slate",
-  };
+  return "slate";
 };
 
 const toneClasses = {
@@ -105,12 +63,44 @@ const toneClasses = {
   },
 };
 
-const dedupeInsights = (items) => {
+const normalizeItem = (item, listDefaultSource = "SYS") => {
+  if (item == null) return null;
+  if (typeof item === "object") {
+    const headline = String(item.headline || item.title || "").trim();
+    const rationale = String(
+      item.rationale || item.why || item.reason || headline,
+    ).trim();
+    if (!headline && !rationale) return null;
+    const display = headline || rationale.slice(0, 100);
+    const explain = rationale || headline;
+    let src = listDefaultSource;
+    if (item.source === "ai" || item.source === "AI") src = "AI";
+    else if (item.source === "sys" || item.source === "SYS") src = "SYS";
+    return {
+      key: `${display}-${explain.slice(0, 24)}`,
+      label: display,
+      title: explain,
+      tone: inferTone(`${display} ${explain}`),
+      source: src,
+    };
+  }
+  const text = String(item || "").trim();
+  if (!text) return null;
+  return {
+    key: text,
+    label: text.length > 110 ? `${text.slice(0, 107)}…` : text,
+    title: text,
+    tone: inferTone(text),
+    source: listDefaultSource,
+  };
+};
+
+const dedupeItems = (items) => {
   const seen = new Set();
-  return items.filter((item) => {
-    const key = String(item || "").trim().toLowerCase();
-    if (!key || seen.has(key)) return false;
-    seen.add(key);
+  return items.filter((row) => {
+    const k = row.label.toLowerCase().replace(/\s+/g, " ").trim();
+    if (!k || seen.has(k)) return false;
+    seen.add(k);
     return true;
   });
 };
@@ -120,16 +110,16 @@ const ActionableInsightList = ({
   fallbackItems = [],
   limit = 4,
   theme = "dark",
-  source = "System",
+  source = "SYS",
 }) => {
-  const displayItems = dedupeInsights(items.length ? items : fallbackItems)
-    .slice(0, limit)
-    .map((item) => ({
-      source: String(item || "").trim(),
-      ...getInsightAction(item),
-    }));
+  const listDefault =
+    source === "AI" || source === "ai" ? "AI" : "SYS";
+  const raw = items.length ? items : fallbackItems;
+  const normalized = dedupeItems(
+    raw.map((item) => normalizeItem(item, listDefault)).filter(Boolean),
+  ).slice(0, limit);
 
-  if (!displayItems.length) {
+  if (!normalized.length) {
     return (
       <div className="text-xs opacity-70">
         No productivity signals available yet.
@@ -139,19 +129,19 @@ const ActionableInsightList = ({
 
   return (
     <div className="flex flex-wrap gap-2">
-      {displayItems.map((item, idx) => {
+      {normalized.map((item, idx) => {
         const tone = toneClasses[item.tone] || toneClasses.slate;
         return (
           <span
-            key={`${item.label}-${idx}`}
-            title={item.source}
-            className={`inline-flex max-w-full items-center gap-1.5 rounded-full border px-2.5 py-1.5 text-[11px] font-semibold ${
+            key={`${item.key}-${idx}`}
+            title={item.title}
+            className={`inline-flex max-w-full cursor-default items-center gap-1.5 rounded-full border px-2.5 py-1.5 text-[11px] font-semibold leading-snug ${
               theme === "dark" ? tone.dark : tone.light
             }`}
           >
-            <span className={`h-1.5 w-1.5 rounded-full ${tone.dot}`} />
-            <span className="truncate">{item.label}</span>
-            <DataSourceBadge source={source} className="ml-0" />
+            <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${tone.dot}`} />
+            <span className="min-w-0 break-words text-left">{item.label}</span>
+            <DataSourceBadge source={item.source} className="ml-0 shrink-0" />
           </span>
         );
       })}

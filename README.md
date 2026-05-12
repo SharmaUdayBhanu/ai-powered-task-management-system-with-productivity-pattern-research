@@ -1,89 +1,62 @@
-# Employee Management System
+# AI-Driven Task Management
 
-[![Live Site](https://img.shields.io/badge/Live-Demo-green?style=for-the-badge&logo=render)](https://job-portal-client-mtot.onrender.com/)
+Full-stack task management with admin and employee dashboards, productivity analytics, and AI-assisted task guidance (Groq). MongoDB stores all data.
 
-
-> A full-stack web application for managing employees and their tasks, featuring admin and employee dashboards, real-time task updates, and a modern responsive UI.
-
----
-
-## Features
-
-- Admin and Employee authentication
-- Assign, update, and track tasks for employees
-- Real-time task status updates (new, active, completed, failed)
-- Responsive UI with dark/light mode
-- RESTful API with Express and MongoDB
-- Deployed on Render (frontend and backend)
-
-## Tech Stack
-
-- **Frontend:** React, Vite, Tailwind CSS, Axios
-- **Backend:** Node.js, Express, MongoDB (Atlas), Mongoose
-
-## 🌐 Live Demo
-
-- 👉 **Frontend:** [https://job-portal-client-mtot.onrender.com](https://job-portal-client-mtot.onrender.com)
-- 🛠 **Backend:** Deployed on Render (private endpoint)
-
-
-## Folder Structure
+## Repository layout
 
 ```
-├── backend/           # Express server, API, MongoDB models
-│   └── dist/          # Frontend build output (served by Express)
-├── client/            # React source code
-│   └── src/
-├── .env               # Environment variables (not committed)
-├── package.json       # Project scripts and dependencies
+├── api/index.js          # Vercel serverless entry → Express app
+├── client/               # Vite + React SPA
+│   └── dist/             # Production build output
+├── server/               # Express API, models, routes
+└── vercel.json           # Vercel build + rewrites
 ```
 
-## Setup & Development
+## Local development
 
-1. **Clone the repository:**
-
-   ```sh
-   git clone https://github.com/SharmaUdayBhanu/employee-management-system.git
-   cd employee-management-system
-   ```
-
-2. **Install dependencies:**
+1. **Install**
 
    ```sh
    npm install
+   cd client && npm install && cd ..
    ```
 
-3. **Set up environment variables:**
+2. **Environment**
 
-   - Create a `.env` file in the root and add:
-     ```
-     VITE_API_URL=https://your-backend-url.onrender.com
-     MONGODB_URI=your-mongodb-atlas-uri
-     ```
+   Copy `.env.example` to `.env` at the repo root and set at least `MONGODB_URI` and `GROQ_API_KEY`. For the client talking to a local API on port 5000, you can use:
 
-4. **Build frontend and start backend:**
+   ```env
+   VITE_API_URL=http://localhost:5000
+   ```
+
+3. **Run**
+
    ```sh
-   npm run build
-   npm start
+   npm run dev:server
    ```
-   The backend will serve the frontend from `backend/dist`.
 
-## Deployment
+   In another terminal:
 
-- Deploy backend and frontend (with build output in `backend/dist`) to [Render](https://render.com).
-- Set environment variables (`MONGODB_URI`, `VITE_API_URL`) in the Render dashboard.
+   ```sh
+   npm run dev:client
+   ```
 
-## Usage
+More detail: see `SETUP_INSTRUCTIONS.md`.
 
-- Admin can log in, view all employees, assign and manage tasks.
-- Employees can log in, view and update their tasks.
-- All data is stored in MongoDB Atlas.
+## Deploy on Vercel
 
-## Notes
+1. Import the repo in [Vercel](https://vercel.com).
+2. **Root directory:** repository root (where `vercel.json` lives).
+3. **Environment variables** (Production + Preview as needed):
 
-- If the database is empty, add initial employees/admins via a seed script or directly in MongoDB Atlas.
-- All API endpoints are prefixed with `/api` (e.g., `/api/employees`).
+   - `MONGODB_URI` — required.
+   - `GROQ_API_KEY` — required for AI features.
+   - Optional: `GROQ_MODEL`, Mongo timeouts (`MONGO_*` from `.env.example`).
+   - **Client build:** add `VITE_API_URL` only if the API is on another origin; for same Vercel project leave unset so requests go to `/api`.
+   - Keep `VITE_ENABLE_REALTIME` unset or `false` on Vercel (Socket.IO is not supported on serverless functions).
 
----
+4. Deploy: Vercel uses `installCommand` and `buildCommand` from `vercel.json`; static files come from `client/dist`, and `/api/*` is handled by `api/index.js`.
 
-**Author:** SharmaUdayBhanu
+## Health check
+
+After deploy, open `/api/health` to confirm the API handler is up (database connectivity is reported there when configured).

@@ -182,28 +182,39 @@ export function buildRuleBasedTaskGuidance({ title, description, metadata }) {
 export function buildEmployeeInsightsPrompt({ input }) {
   return `
 You are an analytics assistant.
-You must analyze ONLY the JSON input provided below and generate concise, behavior-oriented insights.
+You must analyze ONLY the JSON input provided below. Every headline must be unique and specific to this employee (use their name or concrete counts from the input). Do not reuse generic coaching phrases.
 
 Rules:
-- Use only values present in the JSON input.
-- Do not invent numbers or events.
-- Do not restate raw metric values unless required to explain a pattern.
-- Focus on patterns, consistency, risks, specialization, and change signals.
-- Keep all fields short, concrete, and non-generic.
+- Use only values present in the JSON input (names, counts, percentages, task titles from recentActivity, peer averages from teamBaseline).
+- Do not invent numbers, dates, or tasks.
+- quickActions are forward-looking moves the employee or manager can take this week.
+- riskSignals are downside scenarios or warning signs grounded in the metrics (different wording and intent than quickActions; no copy-paste between the two lists).
+- Each rationale must cite at least two concrete facts from the input (numbers, task statuses, peer deltas, or recent task titles).
+- Headlines must be under 12 words and must not repeat across quickActions and riskSignals.
 
 Return ONLY valid JSON in this exact format:
 {
-  "insights": ["3-5 concise pattern insights"],
-  "pattern": "one-line behavior pattern",
-  "specialization": "what work this employee is best suited for",
-  "consistency": "high|moderate|low with short evidence",
-  "riskSignals": ["up to 3 short risk signals"],
+  "quickActions": [
+    { "headline": "unique short label", "rationale": "why this action fits, citing specific input facts" }
+  ],
+  "riskSignals": [
+    { "headline": "unique short risk label", "rationale": "why this risk matters, citing specific input facts" }
+  ],
+  "workloadOutlook": {
+    "headline": "short workload posture label",
+    "rationale": "ground in active/new task counts and recent completion cadence from input"
+  },
+  "pattern": "one-line behavior pattern tied to their metrics",
+  "specialization": "what work this employee is best suited for based on input",
+  "consistency": "high|moderate|low — short evidence from input",
   "changeDetection": {
     "status": "improving|declining|stable",
-    "reason": "short reason based on recent vs previous performance"
+    "reason": "short reason comparing recent vs previous window using input numbers"
   },
-  "comparativeSignal": "how this employee differs from peer baseline in the provided data"
+  "comparativeSignal": "how this employee differs from peer baseline using only teamBaseline figures"
 }
+
+Sizes: 3-4 quickActions, 2-3 riskSignals.
 
 Input JSON:
 ${JSON.stringify(input)}
@@ -216,36 +227,41 @@ You are an analytics assistant for an admin dashboard.
 Analyze ONLY the structured JSON input to identify performance patterns, trends, and issues.
 
 Rules:
-- Use only values present in the input.
-- No invented numbers.
-- Keep output concise and structured.
-- Avoid generic coaching language.
-- Prioritize comparative/team-level reasoning over isolated metric repetition.
+- Use only values present in the input (leaderboardSnapshot names, scores, on-time %, trend deltas, completion counts).
+- No invented numbers or employees.
+- recommendations must be manager actions; each must cite at least two leaderboard facts.
+- teamDiagnostics explain team state (cadence, workload, failures, momentum) and must not reuse recommendation wording.
+- Avoid generic labels like "top performer" without naming the person and citing their metrics.
 
 Return ONLY valid JSON in this exact format:
 {
-  "summary": "2-3 concise sentences",
-  "topPerformer": "short explanation",
-  "mostImproved": "short explanation",
-  "teamPattern": "overall operating pattern of the team",
-  "workloadImbalance": "where workload appears uneven and why",
-  "failureClusters": "where/why failures are clustering",
-  "underutilizedEmployees": ["employee or role-level underutilization notes"],
-  "changeSignals": ["improving/declining/stable shifts with cause"],
+  "summary": "2-3 concise sentences naming people when you cite performance",
+  "topPerformer": "one sentence naming the leader and citing score + on-time or completion signal from input",
+  "mostImproved": "one sentence naming the employee and citing trend delta / last-7-days completions from input",
+  "needsAttention": "one sentence naming the employee who most needs support right now, citing score, failures, or last-7-days completions from input (must not duplicate mostImproved)",
+  "teamDiagnostics": [
+    { "headline": "Team cadence", "rationale": "ground in aggregate completion rate and productivity score from input" },
+    { "headline": "Workload balance", "rationale": "compare employees' last-7-days completions and scores from leaderboardSnapshot" },
+    { "headline": "Failure / risk concentration", "rationale": "cite failed vs completed patterns visible in input" },
+    { "headline": "Momentum shifts", "rationale": "cite trend deltas from leaderboardSnapshot" }
+  ],
+  "underutilizedEmployees": ["specific notes naming employees with low last-7-days completions from input"],
   "employeeInsights": [
     {
       "name": "employee name",
       "email": "employee email if available",
-      "pattern": "short behavior pattern",
-      "specialization": "best-fit work type",
-      "riskSignal": "main risk to monitor",
-      "changeSignal": "improving|declining|stable with brief reason"
+      "pattern": "short behavior pattern from their stats",
+      "specialization": "best-fit work type from their stats",
+      "riskSignal": "main risk to monitor with a metric",
+      "changeSignal": "improving|declining|stable with brief reason from trend delta"
     }
   ],
   "expertAreas": {
-    "employeeName": "what they are best at"
+    "employeeName": "what they are best at (cite a metric)"
   },
-  "recommendations": ["tip 1", "tip 2", "tip 3"]
+  "recommendations": [
+    { "headline": "short action label", "rationale": "why and who based on leaderboardSnapshot" }
+  ]
 }
 
 Input JSON:

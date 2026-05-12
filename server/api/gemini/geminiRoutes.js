@@ -942,7 +942,7 @@ router.post("/explain-task", async (req, res) => {
 
 router.post("/task-assistant", async (req, res) => {
   try {
-    const { question, task } = req.body || {};
+    const { question, task, requester, privacy } = req.body || {};
     const conversationHistory = Array.isArray(req.body?.conversationHistory)
       ? req.body.conversationHistory
       : [];
@@ -960,14 +960,25 @@ router.post("/task-assistant", async (req, res) => {
       ? task.assignments
       : [];
     const members = Array.isArray(task?.members) ? task.members : [];
+    
+    const isGroupTask = members.length > 1;
+    const toneAndRoleInstruction = isGroupTask 
+      ? "You are a collaborative group assistant. Understand what each team member has done. Do not repeat obvious info or guess roles."
+      : "You are a personal assistant for this employee. Understand their role and respond based on the actual task content. Do not say 'please provide context' if the task has no subtasks, instead offer to help plan.";
+
+    const requesterName = String(requester?.name || "User");
+    const requesterIdentity = `The user currently speaking to you is: ${requesterName} (${requester?.role || "employee"}). Always respond to them directly using their name if they introduce themselves or ask who they are. Never confuse their identity.`;
+
+    const stepChecks = Array.isArray(task?.stepChecks) ? task.stepChecks : [];
 
     const contextLines = [
       `Title: ${taskTitle || "N/A"}`,
       `Description: ${taskDescription || "N/A"}`,
+      `Task Type: ${isGroupTask ? "Group Collaborative Task" : "Single Employee Task"}`,
       `Subtasks: ${
         steps.length
-          ? steps.map((step, idx) => `${idx + 1}. ${step}`).join(" | ")
-          : "None"
+          ? steps.map((step, idx) => `${idx + 1}. ${step} (Completed: ${stepChecks[idx] ? "Yes" : "No"})`).join(" | ")
+          : "None defined yet"
       }`,
       `Assignments: ${
         assignments.length
@@ -976,12 +987,12 @@ router.post("/task-assistant", async (req, res) => {
                 (item) =>
                   `${item.step || item.text || ""} -> ${
                     item.assignedName || item.assignedEmail || "Unassigned"
-                  }`,
+                  } (Completed: ${item.completed ? "Yes" : "No"})`,
               )
               .join(" | ")
           : "None"
       }`,
-      `Assigned members: ${
+      `Team Members: ${
         members.length
           ? members.map((member) => member.name || member.email).join(", ")
           : "None"
@@ -999,20 +1010,26 @@ router.post("/task-assistant", async (req, res) => {
       .filter((line) => line.trim() && !line.endsWith(": "));
 
     const prompt = [
-      "You are Savy, an AI task assistant embedded in a team task chat.",
-      "Provide short, direct answers. Do not create new tasks or new requirements.",
-      "Only assist with the given task context and existing subtasks.",
-      "Use the conversation history to preserve continuity. If the user refers to earlier messages, resolve that reference from the history.",
+      "You are Savy, an intelligent task-aware AI assistant embedded in a task chat.",
+      requesterIdentity,
+      toneAndRoleInstruction,
+      "CRITICAL MEMORY RULES:",
+      "- You MUST read the Conversation History below. Do not ever say 'There is no previous conversation' if the history has messages.",
+      "- Continue naturally from previous messages. Reference past discussion when helpful.",
+      "- Do not act like this is a fresh conversation if history exists.",
+      "CRITICAL IDENTITY RULES:",
+      "- If the user says 'I am [Name]', acknowledge them by that name and confirm you will respond based on their assigned work.",
+      "RESPONSE STYLE:",
+      "- Provide short, direct, actionable, and meaningful answers in 2-4 sentences.",
+      "- Be relevant to the task and avoid generic or repetitive filler.",
       "",
-      "Task context:",
+      "Task Context:",
       ...contextLines,
       "",
-      "Conversation history:",
-      ...(historyLines.length ? historyLines : ["No previous messages."]),
+      "Conversation History:",
+      ...(historyLines.length ? historyLines : ["(This is the start of the conversation. No prior messages exist.)"]),
       "",
-      `User question: ${promptQuestion}`,
-      "",
-      "Answer in 2-4 sentences, plain text.",
+      `Question from ${requesterName}: ${promptQuestion}`,
     ].join("\n");
 
     const raw = await callGemini(prompt, {

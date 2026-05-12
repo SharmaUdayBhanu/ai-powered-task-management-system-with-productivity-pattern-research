@@ -400,10 +400,12 @@ const AcceptTask = ({
       const previousAssignments = Array.isArray(groupAssignments)
         ? groupAssignments
         : [];
+      const targetAssignment = previousAssignments[item.groupIndex];
+      const nextCompleted = targetAssignment ? !targetAssignment.completed : true;
+      
       setGroupAssignments((prev) =>
         prev.map((assignment, idx) => {
           if (idx !== item.groupIndex) return assignment;
-          const nextCompleted = !assignment.completed;
           return {
             ...assignment,
             completed: nextCompleted,
@@ -412,10 +414,11 @@ const AcceptTask = ({
           };
         }),
       );
+
       try {
         const response = await axios.post(
           `${API_URL}/group-tasks/${data.groupId}/subtasks/${item.groupIndex}/toggle`,
-          { employeeEmail: data.email },
+          { employeeEmail: data.email, completed: nextCompleted },
         );
         if (Array.isArray(response.data?.assignments)) {
           setGroupAssignments(response.data.assignments);
@@ -454,6 +457,7 @@ const AcceptTask = ({
     try {
       const response = await axios.post(
         `${API_URL}/employees/${data.email}/tasks/${data._id}/subtasks/${item.stepIndex}/toggle`,
+        { completed: optimisticMap[item.id] }
       );
       const stepChecks = Array.isArray(response.data?.stepChecks)
         ? response.data.stepChecks
@@ -465,9 +469,10 @@ const AcceptTask = ({
             prev.steps,
             stepChecks,
           );
+          const mergedCheckedMap = { ...nextCheckedMap, ...optimisticMap }; // Keep optimistic updates
           const nextPayload = {
             ...prev,
-            checkedMap: nextCheckedMap,
+            checkedMap: mergedCheckedMap,
           };
           writeCachedInsight(cacheKey, nextPayload);
           return nextPayload;

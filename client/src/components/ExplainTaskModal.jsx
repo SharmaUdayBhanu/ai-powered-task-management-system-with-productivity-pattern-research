@@ -159,10 +159,12 @@ const ExplainTaskModal = ({
       const previousAssignments = Array.isArray(assignmentState)
         ? assignmentState
         : [];
+      const targetAssignment = previousAssignments[item.groupIndex];
+      const nextCompleted = targetAssignment ? !targetAssignment.completed : true;
+      
       setAssignmentState((prev) =>
         prev.map((assignment, idx) => {
           if (idx !== item.groupIndex) return assignment;
-          const nextCompleted = !assignment.completed;
           return {
             ...assignment,
             completed: nextCompleted,
@@ -174,7 +176,7 @@ const ExplainTaskModal = ({
       try {
         const response = await axios.post(
           `${API_URL}/group-tasks/${groupId}/subtasks/${item.groupIndex}/toggle`,
-          { employeeEmail },
+          { employeeEmail, completed: nextCompleted },
         );
         if (Array.isArray(response.data?.assignments)) {
           setAssignmentState(response.data.assignments);
@@ -206,6 +208,7 @@ const ExplainTaskModal = ({
     try {
       const response = await axios.post(
         `${API_URL}/employees/${employeeEmail}/tasks/${taskId}/subtasks/${item.stepIndex}/toggle`,
+        { completed: nextCheckedMap[item.id] }
       );
       const nextChecks = Array.isArray(response.data?.stepChecks)
         ? response.data.stepChecks
@@ -216,9 +219,10 @@ const ExplainTaskModal = ({
           if (candidate.stepIndex === undefined) return;
           nextMap[candidate.id] = Boolean(nextChecks[candidate.stepIndex]);
         });
-        setCheckedMap(nextMap);
+        const mergedMap = { ...nextMap, ...nextCheckedMap };
+        setCheckedMap(mergedMap);
         try {
-          localStorage.setItem(checklistStorageKey, JSON.stringify(nextMap));
+          localStorage.setItem(checklistStorageKey, JSON.stringify(mergedMap));
         } catch {
           // ignore storage failures
         }

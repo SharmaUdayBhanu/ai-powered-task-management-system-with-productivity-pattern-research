@@ -27,13 +27,23 @@ const normalizeEmail = (value) =>
     .trim()
     .toLowerCase();
 
-const normalizeTasks = ({ tasks = [], isAdmin = false }) => {
+const normalizeTasks = ({ tasks = [], isAdmin = false, userEmail = "" }) => {
   const groupMap = new Map();
   const singleTasks = [];
 
   tasks.forEach((task) => {
     if (!task || task.isDeleted) return;
+    if (task.completed || task.failed) return; // Only show active tasks
+
     if (task.groupTask && task.groupId) {
+      let isMember = isAdmin;
+      if (!isMember && Array.isArray(task.groupMembers)) {
+        isMember = task.groupMembers.some(
+          (m) => normalizeEmail(m.email) === normalizeEmail(userEmail),
+        );
+      }
+      if (!isMember) return;
+
       if (!groupMap.has(task.groupId)) {
         groupMap.set(task.groupId, {
           key: buildTaskKey({ groupId: task.groupId }),
@@ -43,7 +53,7 @@ const normalizeTasks = ({ tasks = [], isAdmin = false }) => {
           category: task.category || "General",
           active: Boolean(task.active),
           completed: Boolean(task.completed),
-          chatEnabled: true,
+          chatEnabled: task.chatEnabled !== false, // Enabled by default
           chatClosed: Boolean(task.chatClosed),
           ownerEmail: null,
           ownerName: "Group",
@@ -57,10 +67,9 @@ const normalizeTasks = ({ tasks = [], isAdmin = false }) => {
 
     if (task.notAccepted) return;
 
-    const chatEnabled = Boolean(task.chatEnabled);
-    if (!chatEnabled && !isAdmin) {
-      // Single-task chat is always allowed for the owner.
-    }
+    const taskOwnerEmail = task.ownerEmail || userEmail;
+    const isOwner = normalizeEmail(taskOwnerEmail) === normalizeEmail(userEmail);
+    if (!isAdmin && !isOwner) return;
 
     singleTasks.push({
       key: buildTaskKey({ taskId: task._id }),
@@ -70,10 +79,10 @@ const normalizeTasks = ({ tasks = [], isAdmin = false }) => {
       category: task.category || "General",
       active: Boolean(task.active),
       completed: Boolean(task.completed),
-      chatEnabled,
+      chatEnabled: task.chatEnabled !== false, // Enabled by default
       chatClosed: Boolean(task.chatClosed),
-      ownerEmail: task.ownerEmail,
-      ownerName: task.ownerName || task.ownerEmail || "Employee",
+      ownerEmail: taskOwnerEmail,
+      ownerName: task.ownerName || taskOwnerEmail || "Employee",
       memberCount: 1,
     });
   });
@@ -83,7 +92,6 @@ const normalizeTasks = ({ tasks = [], isAdmin = false }) => {
 
   return combined.sort((a, b) => {
     if (a.active !== b.active) return a.active ? -1 : 1;
-    if (a.completed !== b.completed) return a.completed ? 1 : -1;
     return (a.title || "").localeCompare(b.title || "");
   });
 };
@@ -112,8 +120,8 @@ const TaskChatDock = ({
   const privateAssistantByTaskRef = useRef(new Map());
 
   const chatTasks = useMemo(
-    () => normalizeTasks({ tasks, isAdmin }),
-    [tasks, isAdmin],
+    () => normalizeTasks({ tasks, isAdmin, userEmail: user.email }),
+    [tasks, isAdmin, user.email],
   );
 
   const selectedTask = useMemo(
@@ -148,7 +156,7 @@ const TaskChatDock = ({
     selectedTask &&
       (selectedTask.groupId
         ? !selectedTask.chatClosed
-        : isSingleOwner),
+        : (!selectedTask.chatClosed && (isSingleOwner || isAdmin))),
   );
 
   const hasUnread = useMemo(
@@ -163,11 +171,7 @@ const TaskChatDock = ({
     }
   }, [chatTasks, selectedKey]);
 
-  useEffect(() => {
-    if (selectedTask && !selectedTask.groupId) {
-      setIsOpen(true);
-    }
-  }, [selectedTask]);
+
 
   const isAcceptedNotice = useCallback((message) => {
     if (message?.type !== "system") return false;
@@ -191,25 +195,12 @@ const TaskChatDock = ({
         if (!message) return false;
         if (isSubtaskNotice(message)) return false;
         const isSystem = message.type === "system";
-        const isAssistant = message.type === "assistant";
-        const isAdmin =
-          message.senderRole === "admin" ||
-          normalizeEmail(message.senderEmail) === "admin";
-        const isOwn =
-          normalizeEmail(message.senderEmail) === normalizedUserEmail &&
-          !isAssistant &&
-          !isSystem;
 
         if (isSystem) {
           return isAcceptedNotice(message);
         }
 
-        if (!isGroup) {
-          if (!isOwner) return false;
-          return isOwn || isAssistant;
-        }
-
-        return isAssistant || isAdmin || isOwn || !isSystem;
+        return true;
       });
     },
     [isAcceptedNotice, isSubtaskNotice, user.email],
@@ -366,11 +357,9 @@ const TaskChatDock = ({
     setAssistantError("");
     const isSingleTask = !selectedTask.groupId;
     const savyMatch = trimmed.match(/@savy\b/i);
-    const savyQuestion = isSingleTask
-      ? trimmed
-      : savyMatch
-        ? trimmed.replace(savyMatch[0], "").trim()
-        : "";
+    const savyQuestion = (!isAdmin && savyMatch)
+      ? trimmed.replace(savyMatch[0], "").trim()
+      : "";
     const signature = `${normalizeEmail(user.email)}|${trimmed}`;
     const optimisticMessage = {
       messageId: `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -400,7 +389,7 @@ const TaskChatDock = ({
           `${API_URL}/group-tasks/${selectedTask.groupId}/chat/messages`,
           payload,
         );
-      } else if (!isSingleTask && selectedTask.taskId && selectedTask.ownerEmail) {
+      } else if (isSingleTask && selectedTask.taskId && selectedTask.ownerEmail) {
         await axios.post(
           `${API_URL}/employees/${selectedTask.ownerEmail}/tasks/${selectedTask.taskId}/chat/messages`,
           payload,
@@ -479,10 +468,18 @@ const TaskChatDock = ({
           assignments: Array.isArray(contextTask.groupStepAssignments)
             ? contextTask.groupStepAssignments
             : [],
+          stepChecks: Array.isArray(contextTask.explainStepChecks)
+            ? contextTask.explainStepChecks
+            : [],
           members: Array.isArray(contextTask.groupMembers)
             ? contextTask.groupMembers
             : fallbackMembers,
         },
+        conversationHistory: messages.map((msg) => ({
+          role: msg.type === "assistant" ? "assistant" : "user",
+          name: msg.senderName || msg.senderEmail,
+          message: msg.message,
+        })),
       };
 
       const response = await axios.post(
@@ -508,14 +505,33 @@ const TaskChatDock = ({
         __signature: signature,
       };
 
-      const existing = privateAssistantByTaskRef.current.get(taskKey) || [];
-      privateAssistantByTaskRef.current.set(taskKey, [
-        ...existing,
-        assistantMessage,
-      ]);
+      const payload = {
+        senderName: "Savy",
+        senderEmail: "assistant@system",
+        senderRole: "assistant",
+        message: answer,
+        type: "assistant",
+      };
+
+      const isGroup = Boolean(contextTask.groupId);
+      if (isGroup) {
+        await axios.post(
+          `${API_URL}/group-tasks/${contextTask.groupId}/chat/messages`,
+          payload
+        );
+      } else if (contextTask._id && (contextTask.ownerEmail || user?.email)) {
+        await axios.post(
+          `${API_URL}/employees/${contextTask.ownerEmail || user.email}/tasks/${contextTask._id}/chat/messages`,
+          payload
+        );
+      }
 
       if (selectedTask && selectedTask.key === taskKey) {
-        setMessages((prev) => [...prev, assistantMessage]);
+        setMessages((prev) => {
+          if (prev.some((item) => item.__signature === signature)) return prev;
+          return [...prev, assistantMessage];
+        });
+        optimisticRef.current.set(signature, assistantMessage.messageId);
         atBottomRef.current = true;
         scrollToBottom("smooth");
       }
@@ -730,7 +746,7 @@ const TaskChatDock = ({
                         : isOwn
                           ? "justify-end"
                           : "justify-start"
-                    }`}
+                    } animate-slide-up-fade`}
                   >
                     <div
                       className={`max-w-[85%] rounded-lg px-3 py-2 text-xs ${bubbleTone} ${
@@ -746,7 +762,24 @@ const TaskChatDock = ({
                                 ? "Savy"
                                 : message.senderName || "Member"}
                           </span>
-                          <span>{formatTimestamp(message.createdAt)}</span>
+                          <span className="flex items-center gap-1">
+                            {formatTimestamp(message.createdAt)}
+                            {isOwn && (
+                              <svg 
+                                className={`w-3 h-3 ${message.__signature ? "text-gray-400" : "text-cyan-400"}`} 
+                                fill="none" viewBox="0 0 24 24" stroke="currentColor"
+                              >
+                                {message.__signature ? (
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                                ) : (
+                                  <>
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 13l4 4L23 7" />
+                                  </>
+                                )}
+                              </svg>
+                            )}
+                          </span>
                         </div>
                       )}
                       <p
@@ -775,6 +808,16 @@ const TaskChatDock = ({
                   </div>
                 );
               })}
+              
+              {(sending || assistantLoading) && (
+                <div className={`flex ${sending ? "justify-end" : "justify-start"} animate-slide-up-fade`}>
+                  <div className={`rounded-full px-4 py-2 text-xs flex items-center gap-1.5 ${isDark ? "bg-white/10" : "bg-gray-100"}`}>
+                    <div className="w-1.5 h-1.5 bg-current rounded-full animate-bounce" style={{animationDelay: "0s"}}></div>
+                    <div className="w-1.5 h-1.5 bg-current rounded-full animate-bounce" style={{animationDelay: "0.15s"}}></div>
+                    <div className="w-1.5 h-1.5 bg-current rounded-full animate-bounce" style={{animationDelay: "0.3s"}}></div>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 

@@ -25,35 +25,54 @@ const AdminEmployeeProductivity = ({ employee, theme = "dark" }) => {
   const [stats, setStats] = useState(null);
   const [chartData, setChartData] = useState(null);
   const [insights, setInsights] = useState([]);
+  const [analysis, setAnalysis] = useState(null);
+  const [insightEngine, setInsightEngine] = useState("sys");
   const [loading, setLoading] = useState(true);
 
   const fetchProductivityData = async (
     employeeId,
-    { forceInsights = false } = {},
+    { forceInsights = false, includeInsights = true, silent = false } = {},
   ) => {
     const insightsPath = forceInsights
       ? `${API_URL}/productivity/${employeeId}/insights?force=true`
       : `${API_URL}/productivity/${employeeId}/insights`;
-    const [statsResult, chartResult, insightsResult] = await Promise.allSettled(
-      [
-        axios.get(`${API_URL}/productivity/${employeeId}/stats`),
-        axios.get(`${API_URL}/productivity/${employeeId}/chart-data`),
-        axios.get(insightsPath),
-      ],
+
+    const core = [
+      axios.get(`${API_URL}/productivity/${employeeId}/stats`),
+      axios.get(`${API_URL}/productivity/${employeeId}/chart-data`),
+    ];
+    const results = await Promise.allSettled(
+      includeInsights ? [...core, axios.get(insightsPath)] : core,
     );
+
+    const statsResult = results[0];
+    const chartResult = results[1];
+    const insightsResult = includeInsights ? results[2] : null;
 
     const nextStats =
       statsResult.status === "fulfilled" ? statsResult.value.data : null;
     const nextChart =
       chartResult.status === "fulfilled" ? chartResult.value.data : null;
     const nextInsights =
-      insightsResult.status === "fulfilled"
+      insightsResult && insightsResult.status === "fulfilled"
         ? insightsResult.value.data?.insights || []
-        : [];
+        : null;
+    const nextAnalysis =
+      insightsResult && insightsResult.status === "fulfilled"
+        ? insightsResult.value.data?.analysis || null
+        : null;
+    const nextEngine =
+      insightsResult && insightsResult.status === "fulfilled"
+        ? insightsResult.value.data?.insightEngine || "sys"
+        : null;
 
     if (nextStats) setStats(nextStats);
     if (nextChart) setChartData(nextChart);
-    setInsights(nextInsights);
+    if (includeInsights && nextInsights !== null) {
+      setInsights(nextInsights);
+      setAnalysis(nextAnalysis);
+      if (nextEngine) setInsightEngine(nextEngine);
+    }
 
     return Boolean(nextStats && nextChart);
   };
@@ -67,7 +86,10 @@ const AdminEmployeeProductivity = ({ employee, theme = "dark" }) => {
     const fetchData = async () => {
       setLoading(true);
       try {
-        await fetchProductivityData(employee._id);
+        await fetchProductivityData(employee._id, {
+          includeInsights: true,
+          silent: false,
+        });
       } catch (err) {
         console.warn("Failed to load productivity data:", err);
       } finally {
@@ -76,7 +98,7 @@ const AdminEmployeeProductivity = ({ employee, theme = "dark" }) => {
     };
 
     fetchData();
-  }, [employee?._id, employee?.tasks?.length]);
+  }, [employee?._id]);
 
   // Real-time updates
   useEffect(() => {
@@ -89,7 +111,10 @@ const AdminEmployeeProductivity = ({ employee, theme = "dark" }) => {
 
     const refreshData = async () => {
       try {
-        await fetchProductivityData(employee._id);
+        await fetchProductivityData(employee._id, {
+          includeInsights: false,
+          silent: true,
+        });
       } catch (err) {
         console.warn("Failed to refresh:", err);
       }
@@ -290,20 +315,20 @@ const AdminEmployeeProductivity = ({ employee, theme = "dark" }) => {
         </div>
       </div>
 
-      {insights.length > 0 && (
+      {(analysis?.quickActionPills?.length > 0 || insights.length > 0) && (
         <div
           className={`text-xs ${theme === "dark" ? "text-gray-300" : "text-gray-700"}`}
         >
           <h4
             className={`font-semibold mb-1 ${theme === "dark" ? "text-white" : "text-gray-900"}`}
           >
-            Quick Actions:
+            Quick actions
           </h4>
           <ActionableInsightList
-            items={insights}
+            items={analysis?.quickActionPills || insights}
             limit={4}
             theme={theme}
-            source="AI"
+            source={insightEngine === "ai" ? "AI" : "SYS"}
           />
         </div>
       )}

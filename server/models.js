@@ -121,6 +121,8 @@ export const employeeSchema = new mongoose.Schema({
   tasks: [taskSchema],
   // Stored AI insights and analytics
   storedInsights: [{ type: String }],
+  // Full structured analysis (pills, pattern text, etc.) for cache hits without losing AI nuance
+  storedInsightAnalysis: { type: mongoose.Schema.Types.Mixed },
   storedChartData: {
     tasksPerDay: [{ date: String, dateLabel: String, count: Number }],
     completionDurationDots: [

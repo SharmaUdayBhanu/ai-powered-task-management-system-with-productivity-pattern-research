@@ -110,9 +110,7 @@ const TaskList = ({ data, onAccept, vertical, theme, onModalStateChange }) => {
   const visibleTasks = useMemo(() => {
     const mergedTasks = (data.tasks || []).map((task) => {
       const aliases = getTaskAliasIds(task);
-      const override = aliases
-        .map((id) => taskOverrides[id])
-        .find(Boolean);
+      const override = aliases.map((id) => taskOverrides[id]).find(Boolean);
       return override ? { ...task, ...override } : task;
     });
 
@@ -132,8 +130,7 @@ const TaskList = ({ data, onAccept, vertical, theme, onModalStateChange }) => {
   }, [data.tasks, activeFilter, taskOverrides]);
 
   const currentTask = useMemo(
-    () =>
-      (data.tasks || []).find((task) => getTaskId(task) === currentTaskId),
+    () => (data.tasks || []).find((task) => getTaskId(task) === currentTaskId),
     [data.tasks, currentTaskId],
   );
 

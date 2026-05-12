@@ -456,20 +456,145 @@ const normalizeInsightsList = (raw, max = 5) => {
   return deduped;
 };
 
-const normalizeEmployeeAiAnalysis = (raw) => {
+const contradictsCoreMetrics = (line, metrics = {}) => {
+  const text = String(line || "").toLowerCase();
+  if (!text) return false;
+
+  const completedTasks = Number(metrics.completedTasks) || 0;
+  const totalTasks = Number(metrics.totalTasks) || 0;
+  const failedTasks = Number(metrics.failedTasks) || 0;
+
+  if (
+    completedTasks > 0 &&
+    /(no\s+tasks?\s+completed|no\s+completion|hasn'?t\s+completed\s+any\s+tasks?)/i.test(
+      text,
+    )
+  ) {
+    return true;
+  }
+
+  if (
+    totalTasks > 0 &&
+    /(no\s+tasks?\s+assigned|no\s+tasks?\s+available)/i.test(text)
+  ) {
+    return true;
+  }
+
+  if (
+    failedTasks === 0 &&
+    /(high\s+failure|many\s+failed|frequent\s+failure)/i.test(text)
+  ) {
+    return true;
+  }
+
+  return false;
+};
+
+const clampText = (value, max = 120) => {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+};
+
+const pillHeadlineKey = (headline) =>
+  String(headline || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+
+const normalizeInsightPill = (item, fallbackSource = "ai") => {
+  if (item == null) return null;
+  if (typeof item === "string") {
+    const t = item.trim();
+    if (!t) return null;
+    return {
+      headline: clampText(t, 100),
+      rationale: t,
+      source: fallbackSource,
+    };
+  }
+  if (typeof item === "object") {
+    const headline = clampText(
+      item.headline || item.title || item.label || item.text || "",
+      100,
+    );
+    const rationale = String(
+      item.rationale || item.why || item.reason || headline,
+    ).trim();
+    if (!headline) return null;
+    const src =
+      item.source === "sys" || item.source === "SYS" ? "sys" : fallbackSource;
+    return { headline, rationale: rationale || headline, source: src };
+  }
+  return null;
+};
+
+const normalizePillArray = (raw, max = 5, fallbackSource = "ai") => {
+  const arr = Array.isArray(raw) ? raw : [];
+  const out = [];
+  const seen = new Set();
+  for (const x of arr) {
+    const p = normalizeInsightPill(x, fallbackSource);
+    if (!p) continue;
+    const k = pillHeadlineKey(p.headline);
+    if (!k || seen.has(k)) continue;
+    seen.add(k);
+    out.push(p);
+    if (out.length >= max) break;
+  }
+  return out;
+};
+
+const dedupePillsAcrossSections = (
+  quickPills,
+  riskPills,
+  maxQuick = 4,
+  maxRisk = 3,
+) => {
+  const riskKeys = new Set(riskPills.map((p) => pillHeadlineKey(p.headline)));
+  const quickFiltered = quickPills.filter(
+    (p) => !riskKeys.has(pillHeadlineKey(p.headline)),
+  );
+  const quickKeys = new Set(
+    quickFiltered.map((p) => pillHeadlineKey(p.headline)),
+  );
+  const riskFiltered = riskPills.filter(
+    (p) => !quickKeys.has(pillHeadlineKey(p.headline)),
+  );
+  return [quickFiltered.slice(0, maxQuick), riskFiltered.slice(0, maxRisk)];
+};
+
+const filterPillsAgainstMetrics = (pills, metrics = {}) =>
+  pills.filter((p) => !contradictsCoreMetrics(p.rationale || p.headline, metrics));
+
+const normalizeEmployeeAiAnalysis = (raw, metrics = {}) => {
   if (!raw || typeof raw !== "object") return null;
 
-  const insights = normalizeInsightsList(raw, 5);
+  let quick = normalizePillArray(raw.quickActions, 6, "ai");
+  let risk = normalizePillArray(raw.riskSignals, 6, "ai");
+
+  if (!quick.length && Array.isArray(raw.insights)) {
+    quick = normalizePillArray(raw.insights, 6, "ai");
+  }
+  if (!risk.length && Array.isArray(raw.riskAlerts)) {
+    risk = normalizePillArray(raw.riskAlerts, 6, "ai");
+  }
+
+  quick = filterPillsAgainstMetrics(quick, metrics);
+  risk = filterPillsAgainstMetrics(risk, metrics);
+
+  [quick, risk] = dedupePillsAcrossSections(quick, risk, 4, 3);
+
+  let workloadOutlook = normalizeInsightPill(raw.workloadOutlook, "ai");
+  if (workloadOutlook) {
+    const ok = filterPillsAgainstMetrics([workloadOutlook], metrics);
+    workloadOutlook = ok[0] || null;
+  }
+
   const pattern = String(raw.pattern || "").trim();
   const specialization = String(raw.specialization || "").trim();
   const consistency = String(raw.consistency || "").trim();
   const comparativeSignal = String(raw.comparativeSignal || "").trim();
-  const riskSignals = Array.isArray(raw.riskSignals)
-    ? raw.riskSignals
-        .map((item) => String(item || "").trim())
-        .filter(Boolean)
-        .slice(0, 3)
-    : [];
 
   const changeDetectionRaw =
     raw.changeDetection && typeof raw.changeDetection === "object"
@@ -478,18 +603,39 @@ const normalizeEmployeeAiAnalysis = (raw) => {
   const changeStatus = String(changeDetectionRaw.status || "").trim();
   const changeReason = String(changeDetectionRaw.reason || "").trim();
 
+  if (!quick.length && !risk.length && !pattern) return null;
+
   return {
-    insights,
+    quickActionPills: quick,
+    riskPills: risk,
+    workloadOutlook,
     pattern,
     specialization,
     consistency,
     comparativeSignal,
-    riskSignals,
     changeDetection: {
       status: changeStatus,
       reason: changeReason,
     },
+    insights: quick.map((p) => p.headline),
+    riskSignals: risk.map((p) => p.rationale),
   };
+};
+
+const normalizeAdminRecommendationPill = (item) => {
+  if (item == null) return null;
+  if (typeof item === "string") {
+    const t = item.trim();
+    if (!t) return null;
+    return { headline: clampText(t, 100), rationale: t, source: "ai" };
+  }
+  if (typeof item === "object") {
+    const headline = clampText(item.headline || item.title || "", 100);
+    const rationale = String(item.rationale || item.why || headline).trim();
+    if (!headline) return null;
+    return { headline, rationale: rationale || headline, source: "ai" };
+  }
+  return null;
 };
 
 const normalizeAdminInsights = (raw) => {
@@ -498,17 +644,61 @@ const normalizeAdminInsights = (raw) => {
   const summary = String(raw.summary || "").trim();
   const topPerformer = String(raw.topPerformer || "").trim();
   const mostImproved = String(raw.mostImproved || "").trim();
+  const needsAttention = String(raw.needsAttention || "").trim();
 
-  const recommendations = Array.isArray(raw.recommendations)
+  let recommendations = Array.isArray(raw.recommendations)
     ? raw.recommendations
-        .map((item) => String(item || "").trim())
+        .map((item) => normalizeAdminRecommendationPill(item))
         .filter(Boolean)
-        .slice(0, 5)
+        .slice(0, 6)
     : [];
 
   const teamPattern = String(raw.teamPattern || "").trim();
   const workloadImbalance = String(raw.workloadImbalance || "").trim();
   const failureClusters = String(raw.failureClusters || "").trim();
+
+  let teamDiagnostics = Array.isArray(raw.teamDiagnostics)
+    ? raw.teamDiagnostics
+        .map((item) => normalizeInsightPill(item, "ai"))
+        .filter(Boolean)
+        .slice(0, 8)
+    : [];
+
+  if (!teamDiagnostics.length) {
+    if (teamPattern) {
+      teamDiagnostics.push(
+        normalizeInsightPill(
+          { headline: "Team cadence", rationale: teamPattern },
+          "ai",
+        ),
+      );
+    }
+    if (workloadImbalance) {
+      teamDiagnostics.push(
+        normalizeInsightPill(
+          { headline: "Workload balance", rationale: workloadImbalance },
+          "ai",
+        ),
+      );
+    }
+    if (failureClusters) {
+      teamDiagnostics.push(
+        normalizeInsightPill(
+          { headline: "Failure concentration", rationale: failureClusters },
+          "ai",
+        ),
+      );
+    }
+  }
+
+  const tdSeen = new Set();
+  teamDiagnostics = teamDiagnostics.filter((p) => {
+    const k = pillHeadlineKey(p.headline);
+    if (!k || tdSeen.has(k)) return false;
+    tdSeen.add(k);
+    return true;
+  });
+
   const underutilizedEmployees = Array.isArray(raw.underutilizedEmployees)
     ? raw.underutilizedEmployees
         .map((item) => String(item || "").trim())
@@ -555,9 +745,11 @@ const normalizeAdminInsights = (raw) => {
     summary,
     topPerformer,
     mostImproved,
+    needsAttention,
     teamPattern,
     workloadImbalance,
     failureClusters,
+    teamDiagnostics,
     underutilizedEmployees,
     changeSignals,
     employeeInsights,
@@ -661,92 +853,11 @@ const computeTeamBaselineSnapshot = (employees = [], currentEmployeeId) => {
   };
 };
 
-const generateDataDrivenInsights = (input) => {
-  const insights = [];
-  const metrics = input?.metrics || {};
-  const taskCounts = input?.taskCounts || {};
-
-  insights.push(
-    `Completion rate is ${metrics.completionRate ?? 0}% across ${metrics.totalTasks ?? 0} tasks (${metrics.completedTasks ?? 0} completed, ${metrics.failedTasks ?? 0} failed).`,
-  );
-
-  insights.push(
-    `Productivity score is ${metrics.productivityScore ?? 0} using score = (completed × 2) − failed, with average completion time ${metrics.averageCompletionTimeMinutes ?? 0} minutes.`,
-  );
-
-  if (typeof metrics.productivityTrendDelta === "number") {
-    const trendLabel =
-      metrics.productivityTrendDelta > 0
-        ? `improving by ${metrics.productivityTrendDelta} tasks compared to the previous 7-day window`
-        : metrics.productivityTrendDelta < 0
-          ? `declining by ${Math.abs(metrics.productivityTrendDelta)} tasks compared to the previous 7-day window`
-          : "stable compared to the previous 7-day window";
-    insights.push(
-      `Weekly completion trend is ${trendLabel} (${metrics.completedLast7Days ?? 0} vs ${metrics.completedPrevious7Days ?? 0}).`,
-    );
-  }
-
-  if (taskCounts.active > 0 || taskCounts.newTask > 0) {
-    insights.push(
-      `Current workload has ${taskCounts.active || 0} active and ${taskCounts.newTask || 0} new tasks; prioritize high-impact items before opening additional tasks.`,
-    );
-  }
-
-  if (input?.recentAction?.taskTitle && input?.recentAction?.taskStatus) {
-    insights.push(
-      `Latest action: "${input.recentAction.taskTitle}" is marked ${input.recentAction.taskStatus}; use this as the immediate checkpoint for next-step planning.`,
-    );
-  }
-
-  return normalizeInsightsList(insights, 5);
-};
-
-const contradictsCoreMetrics = (line, metrics = {}) => {
-  const text = String(line || "").toLowerCase();
-  if (!text) return false;
-
-  const completedTasks = Number(metrics.completedTasks) || 0;
-  const totalTasks = Number(metrics.totalTasks) || 0;
-  const failedTasks = Number(metrics.failedTasks) || 0;
-
-  if (
-    completedTasks > 0 &&
-    /(no\s+tasks?\s+completed|no\s+completion|hasn'?t\s+completed\s+any\s+tasks?)/i.test(
-      text,
-    )
-  ) {
-    return true;
-  }
-
-  if (
-    totalTasks > 0 &&
-    /(no\s+tasks?\s+assigned|no\s+tasks?\s+available)/i.test(text)
-  ) {
-    return true;
-  }
-
-  if (
-    failedTasks === 0 &&
-    /(high\s+failure|many\s+failed|frequent\s+failure)/i.test(text)
-  ) {
-    return true;
-  }
-
-  return false;
-};
-
-const mergeWithAuthoritativeInsights = (input, aiInsights = []) => {
-  const authoritative = generateDataDrivenInsights(input);
-  const filteredAi = normalizeInsightsList(aiInsights, 5).filter(
-    (line) => !contradictsCoreMetrics(line, input?.metrics || {}),
-  );
-  return normalizeInsightsList([...authoritative, ...filteredAi], 5);
-};
-
 const buildEmployeePatternFallback = (input) => {
   const metrics = input?.metrics || {};
   const completionRate = Number(metrics.completionRate) || 0;
   const onTimePercent = Number(metrics.onTimePercent) || 0;
+  const delayedPercent = Number(metrics.delayedPercent) || 0;
   const failedTasks = Number(metrics.failedTasks) || 0;
   const completedTasks = Number(metrics.completedTasks) || 0;
   const avgCompletion = Number(metrics.averageCompletionTimeMinutes) || 0;
@@ -755,6 +866,10 @@ const buildEmployeePatternFallback = (input) => {
   const peakWindow = String(metrics.peakProductivityWindow || "N/A");
   const activeTasks = Number(input?.taskCounts?.active) || 0;
   const newTasks = Number(input?.taskCounts?.newTask) || 0;
+  const completedLast7 = Number(metrics.completedLast7Days) || 0;
+  const completedPrev7 = Number(metrics.completedPrevious7Days) || 0;
+  const peer = input?.teamBaseline || {};
+  const name = String(input?.employee?.name || "This employee").trim() || "This employee";
 
   let pattern =
     "Balanced execution profile with moderate throughput and predictable delivery.";
@@ -790,24 +905,6 @@ const buildEmployeePatternFallback = (input) => {
     consistency = "low consistency with volatile outcomes";
   }
 
-  const riskSignals = [];
-  if (failedTasks >= 3) {
-    riskSignals.push(
-      "Failure frequency is elevated relative to completed output.",
-    );
-  }
-  if (activeTasks + newTasks >= 8) {
-    riskSignals.push("Open workload is high, increasing context-switch risk.");
-  }
-  if (totalTasks > 0 && completedTasks === 0) {
-    riskSignals.push(
-      "No completion evidence in current window; inactivity risk detected.",
-    );
-  }
-  if (!riskSignals.length) {
-    riskSignals.push("No critical risk cluster detected in current snapshot.");
-  }
-
   const changeDetection =
     trendDelta > 0
       ? {
@@ -826,20 +923,103 @@ const buildEmployeePatternFallback = (input) => {
           };
 
   const comparativeSignal =
-    completedTasks >= 6
-      ? "Above baseline throughput pattern with sustained completion cadence."
-      : failedTasks >= 3
-        ? "Outcome reliability is below baseline due to clustered failures."
-        : "Performance signal sits near team baseline with no extreme variance.";
+    peer.peerCount > 0
+      ? `${name} is at ${metrics.productivityScore ?? 0} productivity score vs peer average ${peer.avgProductivityScore}; on-time ${onTimePercent}% vs peers ${peer.avgOnTimePercent}%; last-7-days completions ${completedLast7} vs peer avg ${peer.avgCompletedLast7}.`
+      : completedTasks >= 6
+        ? "Above baseline throughput pattern with sustained completion cadence."
+        : failedTasks >= 3
+          ? "Outcome reliability is weaker when failures cluster against completions."
+          : "Performance signal sits near baseline with no extreme variance in current counts.";
+
+  const quickActionPills = [];
+  quickActionPills.push({
+    headline: `Tune weekly rhythm (${completedLast7} vs ${completedPrev7})`,
+    rationale: `${name} closed ${completedLast7} tasks in the last 7 days and ${completedPrev7} in the prior 7 days (delta ${trendDelta}). With ${completionRate}% completion rate across ${totalTasks} tasks, prioritize the next closures that move this delta in the right direction.`,
+    source: "sys",
+  });
+
+  if (delayedPercent >= 35 && completedTasks > 0) {
+    quickActionPills.push({
+      headline: `Recover on-time (${onTimePercent}% on-time)`,
+      rationale: `Among timed completions, delayed share is ${delayedPercent}% and on-time is ${onTimePercent}%. Average completion duration is ${avgCompletion} minutes—tighten checkpoints on tasks with hard dates.`,
+      source: "sys",
+    });
+  }
+
+  if (activeTasks > 0 || newTasks > 0) {
+    quickActionPills.push({
+      headline: `Sequence ${activeTasks} active / ${newTasks} new tasks`,
+      rationale: `Queue shows ${activeTasks} active and ${newTasks} new assignments while ${failedTasks} tasks failed and ${completedTasks} completed in the dataset—finish one active item before pulling additional scope.`,
+      source: "sys",
+    });
+  }
+
+  if (input?.recentAction?.taskTitle && input?.recentAction?.taskStatus) {
+    quickActionPills.push({
+      headline: `Follow up: ${clampText(input.recentAction.taskTitle, 40)}`,
+      rationale: `Most recent tracked action is "${input.recentAction.taskTitle}" marked ${input.recentAction.taskStatus}. Use that outcome to choose the next concrete task step.`,
+      source: "sys",
+    });
+  }
+
+  const riskPills = [];
+  if (failedTasks >= 2) {
+    riskPills.push({
+      headline: `Failure load (${failedTasks}) vs ${completedTasks} wins`,
+      rationale: `${name} has ${failedTasks} failed tasks against ${completedTasks} completions, so reliability risk rises if new work stacks before root causes are reviewed.`,
+      source: "sys",
+    });
+  }
+  if (activeTasks + newTasks >= 8) {
+    riskPills.push({
+      headline: `Context-switch load (${activeTasks + newTasks} open)`,
+      rationale: `Open assignments total ${activeTasks} active plus ${newTasks} new—high parallel load often extends cycle times beyond the ${avgCompletion} minute average.`,
+      source: "sys",
+    });
+  }
+  if (totalTasks > 0 && completedTasks === 0) {
+    riskPills.push({
+      headline: "No completions captured yet",
+      rationale: `There are ${totalTasks} visible tasks but zero completions recorded—delivery risk until a first clean finish proves the workflow.`,
+      source: "sys",
+    });
+  }
+  if (!riskPills.length) {
+    riskPills.push({
+      headline: "No acute risk flag in this snapshot",
+      rationale: `Given ${failedTasks} failures, ${completedTasks} completions, and ${activeTasks + newTasks} open assignments, nothing crosses an automatic critical threshold—still monitor week-over-week deltas.`,
+      source: "sys",
+    });
+  }
+
+  let workloadHeadline = "Balanced queue depth";
+  if (activeTasks + newTasks === 0) {
+    workloadHeadline = "Very light assigned queue";
+  } else if (activeTasks + newTasks >= 8) {
+    workloadHeadline = "Heavy parallel queue";
+  } else if (completedLast7 === 0 && totalTasks > 0) {
+    workloadHeadline = "Assigned work but quiet week";
+  }
+
+  const workloadOutlook = {
+    headline: workloadHeadline,
+    rationale: `${name} carries ${activeTasks} active and ${newTasks} new tasks, with ${completedLast7} completions in the last 7 days and productivity score ${metrics.productivityScore ?? 0} (from completed/failed counts).`,
+    source: "sys",
+  };
+
+  const [qa, rp] = dedupePillsAcrossSections(quickActionPills, riskPills, 4, 3);
 
   return {
-    insights: generateDataDrivenInsights(input),
+    quickActionPills: qa,
+    riskPills: rp,
+    workloadOutlook,
     pattern,
     specialization,
     consistency,
-    riskSignals,
     changeDetection,
     comparativeSignal,
+    insights: qa.map((p) => p.headline),
+    riskSignals: rp.map((p) => p.rationale),
   };
 };
 
@@ -860,38 +1040,55 @@ const buildLowDataEmployeeAnalysis = (input) => {
   const completedTasks = Number(metrics.completedTasks) || 0;
   const totalTasks = Number(metrics.totalTasks) || 0;
   const completedLast7 = Number(metrics.completedLast7Days) || 0;
+  const failedTasks = Number(metrics.failedTasks) || 0;
+  const name = String(input?.employee?.name || "This employee").trim() || "This employee";
 
-  const cautiousInsights = [];
+  const quickActionPills = [];
   if (completedTasks > 0) {
-    cautiousInsights.push(
-      `Recent activity detected: ${completedTasks} completed task${completedTasks > 1 ? "s" : ""}${completedLast7 ? ` (${completedLast7} in last 7 days)` : ""}.`,
-    );
+    quickActionPills.push({
+      headline: `Log the next win after ${completedTasks} completion${completedTasks > 1 ? "s" : ""}`,
+      rationale: `${name} has only ${completedTasks} completed task${completedTasks > 1 ? "s" : ""}${completedLast7 ? ` including ${completedLast7} in the last 7 days` : ""} across ${totalTasks} visible tasks—add one more clean finish before drawing strong conclusions.`,
+      source: "sys",
+    });
   } else {
-    cautiousInsights.push(
-      "Very limited completion history is available; insights will become stronger after more completed tasks.",
-    );
+    quickActionPills.push({
+      headline: "Capture a first clean completion",
+      rationale: `With ${totalTasks} visible tasks and zero recorded completions, the next step is to finish one task end-to-end so timing and reliability metrics can populate.`,
+      source: "sys",
+    });
   }
 
-  if (totalTasks <= 1) {
-    cautiousInsights.push(
-      "Data is too sparse for strong pattern claims; treat this as an initial baseline snapshot.",
-    );
-  } else {
-    cautiousInsights.push(
-      "Early signal only: avoid overfitting conclusions until more task outcomes are recorded.",
-    );
-  }
+  quickActionPills.push({
+    headline: "Defer deep pattern reads",
+    rationale: `Dataset is below the insight threshold (${totalTasks} tasks, ${completedTasks} completions, ${failedTasks} failures)—treat any trend language as provisional.`,
+    source: "sys",
+  });
+
+  const riskPills = [
+    {
+      headline: "Low statistical confidence",
+      rationale: `Only ${completedTasks} completions and ${failedTasks} failures are available; small samples can exaggerate swings in on-time and productivity scores.`,
+      source: "sys",
+    },
+  ];
+
+  const [qa, rp] = dedupePillsAcrossSections(quickActionPills, riskPills, 4, 3);
 
   return {
-    insights: normalizeInsightsList(cautiousInsights, 5),
+    quickActionPills: qa,
+    riskPills: rp,
+    workloadOutlook: {
+      headline: "Workload signal not stable yet",
+      rationale: `${name} shows ${totalTasks} tasks with ${completedTasks} completions—queue posture will be clearer after more outcomes.`,
+      source: "sys",
+    },
     pattern:
       "Insufficient historical data for a stable execution pattern; baseline capture in progress.",
     specialization:
       "Not enough completed volume yet to infer specialization reliably.",
     consistency: "low-confidence (insufficient completed-task sample)",
-    riskSignals: [
-      "Low sample size can distort trend, specialization, and risk interpretation.",
-    ],
+    insights: qa.map((p) => p.headline),
+    riskSignals: rp.map((p) => p.rationale),
     changeDetection: {
       status: "stable",
       reason:
@@ -899,6 +1096,68 @@ const buildLowDataEmployeeAnalysis = (input) => {
     },
     comparativeSignal:
       "Comparative signal is low-confidence until a larger completion history is available.",
+  };
+};
+
+const enrichEmployeeAnalysis = (aiAnalysis, fallbackAnalysis) => {
+  if (!fallbackAnalysis || typeof fallbackAnalysis !== "object") {
+    return aiAnalysis;
+  }
+  if (!aiAnalysis || typeof aiAnalysis !== "object") {
+    return { ...fallbackAnalysis };
+  }
+
+  let quick = Array.isArray(aiAnalysis.quickActionPills)
+    ? [...aiAnalysis.quickActionPills]
+    : [];
+  let risk = Array.isArray(aiAnalysis.riskPills) ? [...aiAnalysis.riskPills] : [];
+
+  if (!quick.length && Array.isArray(aiAnalysis.insights)) {
+    quick = aiAnalysis.insights
+      .map((h) =>
+        normalizeInsightPill({ headline: h, rationale: String(h) }, "ai"),
+      )
+      .filter(Boolean);
+  }
+  if (!risk.length && Array.isArray(aiAnalysis.riskSignals)) {
+    risk = aiAnalysis.riskSignals
+      .map((t) => {
+        const text = String(t || "").trim();
+        if (!text) return null;
+        return normalizeInsightPill(
+          { headline: clampText(text, 90), rationale: text },
+          "ai",
+        );
+      })
+      .filter(Boolean);
+  }
+
+  const fbQuick = fallbackAnalysis.quickActionPills || [];
+  const fbRisk = fallbackAnalysis.riskPills || [];
+
+  if (!quick.length) quick = [...fbQuick];
+  if (!risk.length) risk = [...fbRisk];
+
+  [quick, risk] = dedupePillsAcrossSections(quick, risk, 4, 3);
+
+  return {
+    ...fallbackAnalysis,
+    ...aiAnalysis,
+    quickActionPills: quick,
+    riskPills: risk,
+    workloadOutlook:
+      aiAnalysis.workloadOutlook || fallbackAnalysis.workloadOutlook,
+    pattern: aiAnalysis.pattern || fallbackAnalysis.pattern,
+    specialization:
+      aiAnalysis.specialization || fallbackAnalysis.specialization,
+    consistency: aiAnalysis.consistency || fallbackAnalysis.consistency,
+    comparativeSignal:
+      aiAnalysis.comparativeSignal || fallbackAnalysis.comparativeSignal,
+    changeDetection: aiAnalysis.changeDetection?.status
+      ? aiAnalysis.changeDetection
+      : fallbackAnalysis.changeDetection,
+    insights: quick.map((p) => p.headline),
+    riskSignals: risk.map((p) => p.rationale),
   };
 };
 
@@ -914,6 +1173,7 @@ const generateAdminDataDrivenInsights = ({
   const mostImproved = [...allEmployees].sort(
     (a, b) => b.trendDelta - a.trendDelta,
   )[0];
+  const lowestPerformer = allEmployees[allEmployees.length - 1];
 
   const expertAreas = {};
   allEmployees.slice(0, 3).forEach((emp) => {
@@ -1007,10 +1267,71 @@ const generateAdminDataDrivenInsights = ({
     };
   });
 
+  const recommendationStrings = [
+    `Route higher-priority work to employees with on-time rate above ${Math.max(70, Math.round(topPerformer.onTimePercent - 5))}%.`,
+    `Coach employees with negative trend deltas using recent failed-task reviews and shorter milestone check-ins.`,
+    `Use completion-time outliers to rebalance workload and protect team average completion time (${dashboardSummary.averageCompletionTimeMinutes} min).`,
+  ];
+
+  const recommendationPills = recommendationStrings
+    .map((t) =>
+      normalizeInsightPill(
+        {
+          headline: clampText(t.split(".")[0] || t, 100),
+          rationale: t,
+        },
+        "sys",
+      ),
+    )
+    .filter(Boolean);
+
+  const teamDiagnosticPillsRaw = [
+    normalizeInsightPill({ headline: "Team cadence", rationale: teamPattern }, "sys"),
+    normalizeInsightPill(
+      { headline: "Workload balance", rationale: workloadImbalance },
+      "sys",
+    ),
+    normalizeInsightPill(
+      { headline: "Failure concentration", rationale: failureClusters },
+      "sys",
+    ),
+  ];
+  if (underutilized.length) {
+    teamDiagnosticPillsRaw.push(
+      normalizeInsightPill(
+        {
+          headline: "Bench / low utilization",
+          rationale: `Employees with zero last-7-days completions: ${underutilized.join(", ")}.`,
+        },
+        "sys",
+      ),
+    );
+  }
+  changeSignals.slice(0, 4).forEach((line) => {
+    teamDiagnosticPillsRaw.push(
+      normalizeInsightPill(
+        {
+          headline: clampText(line, 88),
+          rationale: line,
+        },
+        "sys",
+      ),
+    );
+  });
+
+  const diagSeen = new Set();
+  const teamDiagnosticPills = teamDiagnosticPillsRaw.filter((p) => {
+    const k = pillHeadlineKey(p.headline);
+    if (!k || diagSeen.has(k)) return false;
+    diagSeen.add(k);
+    return true;
+  });
+
   return {
     summary: `Team completion rate is ${dashboardSummary.completionRate}% across ${dashboardSummary.totalTasks} tasks. ${topPerformer.name} currently leads with score ${topPerformer.productivityScore}, while trend monitoring should focus on employees with negative weekly deltas.`,
     topPerformer: `${topPerformer.name} leads with score ${topPerformer.productivityScore} and ${topPerformer.onTimePercent.toFixed(1)}% on-time delivery.`,
     mostImproved: `${mostImproved.name} shows the strongest recent trend delta (${mostImproved.trendDelta >= 0 ? "+" : ""}${mostImproved.trendDelta}).`,
+    needsAttention: `${lowestPerformer.name} has the lowest productivity score (${lowestPerformer.productivityScore}) with ${lowestPerformer.totalFailed} failed tasks and ${lowestPerformer.completedLast7} completions in the last 7 days (trend delta ${lowestPerformer.trendDelta >= 0 ? "+" : ""}${lowestPerformer.trendDelta}).`,
     teamPattern,
     workloadImbalance,
     failureClusters,
@@ -1018,49 +1339,137 @@ const generateAdminDataDrivenInsights = ({
     changeSignals,
     employeeInsights,
     expertAreas,
-    recommendations: [
-      `Route higher-priority work to employees with on-time rate above ${Math.max(70, Math.round(topPerformer.onTimePercent - 5))}%.`,
-      `Coach employees with negative trend deltas using recent failed-task reviews and shorter milestone check-ins.`,
-      `Use completion-time outliers to rebalance workload and protect team average completion time (${dashboardSummary.averageCompletionTimeMinutes} min).`,
-    ],
+    recommendations: recommendationStrings,
+    recommendationPills,
+    teamDiagnosticPills,
+    teamDiagnostics: teamDiagnosticPills,
   };
 };
 
+const adminPickRichText = (preferred, fallback) => {
+  const p = String(preferred || "").trim();
+  if (p.length >= 28) return p;
+  const f = String(fallback || "").trim();
+  return f || p;
+};
+
+const adminRecommendationToPill = (item, source) => {
+  if (!item) return null;
+  if (typeof item === "object" && item.headline && item.rationale) {
+    return { ...item, source: item.source || source };
+  }
+  if (typeof item === "object" && item.rationale) {
+    return normalizeInsightPill(
+      {
+        headline: item.headline || clampText(String(item.rationale).split(".")[0], 100),
+        rationale: item.rationale,
+      },
+      source,
+    );
+  }
+  const text = String(item).trim();
+  if (!text) return null;
+  return normalizeInsightPill(
+    {
+      headline: clampText(text.split(".")[0] || text, 100),
+      rationale: text,
+    },
+    source,
+  );
+};
+
+const dedupeAdminPillsPreferOrder = (pills) => {
+  const seen = new Set();
+  const out = [];
+  for (const p of pills) {
+    const k = pillHeadlineKey(p.headline);
+    if (!k || seen.has(k)) continue;
+    seen.add(k);
+    out.push(p);
+  }
+  return out;
+};
+
 const reconcileAdminInsights = ({ candidate, dashboardSummary, allEmployees }) => {
-  const authoritative = generateAdminDataDrivenInsights({
+  const baseline = generateAdminDataDrivenInsights({
     dashboardSummary,
     allEmployees,
   });
 
-  if (!authoritative) return null;
-  if (!candidate) return authoritative;
+  if (!baseline) return null;
+
+  const baseRecPills = (baseline.recommendationPills || []).map((p) => ({
+    ...p,
+    source: "sys",
+  }));
+  const baseTeamPills = baseline.teamDiagnosticPills || [];
+
+  if (!candidate) {
+    return {
+      ...baseline,
+      recommendationPills: baseRecPills,
+      teamDiagnosticPills: baseTeamPills,
+      teamDiagnostics: baseTeamPills,
+    };
+  }
+
+  const candRecPills = (Array.isArray(candidate.recommendations)
+    ? candidate.recommendations
+    : []
+  )
+    .map((r) => adminRecommendationToPill(r, "ai"))
+    .filter(Boolean);
+
+  const mergedRecPills = dedupeAdminPillsPreferOrder([
+    ...candRecPills,
+    ...baseRecPills,
+  ]).slice(0, 6);
+
+  const candTeamPills = Array.isArray(candidate.teamDiagnostics)
+    ? candidate.teamDiagnostics
+        .map((t) => normalizeInsightPill(t, "ai"))
+        .filter(Boolean)
+    : [];
+
+  const mergedTeamPills = dedupeAdminPillsPreferOrder([
+    ...candTeamPills,
+    ...baseTeamPills,
+  ]).slice(0, 10);
 
   return {
     ...candidate,
-    summary: authoritative.summary,
-    topPerformer: authoritative.topPerformer,
-    mostImproved: authoritative.mostImproved,
-    teamPattern: authoritative.teamPattern,
-    workloadImbalance: authoritative.workloadImbalance,
-    failureClusters: authoritative.failureClusters,
-    underutilizedEmployees: authoritative.underutilizedEmployees,
-    changeSignals: authoritative.changeSignals,
-    employeeInsights: authoritative.employeeInsights,
-    expertAreas:
-      Object.keys(authoritative.expertAreas || {}).length > 0
-        ? authoritative.expertAreas
-        : candidate.expertAreas || {},
-    recommendations: normalizeInsightsList(
-      [
-        ...(Array.isArray(candidate.recommendations)
-          ? candidate.recommendations
-          : []),
-        ...(Array.isArray(authoritative.recommendations)
-          ? authoritative.recommendations
-          : []),
-      ],
-      5,
+    summary: adminPickRichText(candidate.summary, baseline.summary),
+    topPerformer: adminPickRichText(candidate.topPerformer, baseline.topPerformer),
+    mostImproved: adminPickRichText(candidate.mostImproved, baseline.mostImproved),
+    needsAttention: adminPickRichText(
+      candidate.needsAttention,
+      baseline.needsAttention,
     ),
+    teamPattern: baseline.teamPattern,
+    workloadImbalance: baseline.workloadImbalance,
+    failureClusters: baseline.failureClusters,
+    underutilizedEmployees:
+      Array.isArray(candidate.underutilizedEmployees) &&
+      candidate.underutilizedEmployees.length
+        ? candidate.underutilizedEmployees
+        : baseline.underutilizedEmployees,
+    changeSignals:
+      Array.isArray(candidate.changeSignals) && candidate.changeSignals.length
+        ? candidate.changeSignals
+        : baseline.changeSignals,
+    employeeInsights:
+      Array.isArray(candidate.employeeInsights) &&
+      candidate.employeeInsights.length
+        ? candidate.employeeInsights
+        : baseline.employeeInsights,
+    expertAreas: {
+      ...baseline.expertAreas,
+      ...(candidate.expertAreas || {}),
+    },
+    recommendations: mergedRecPills.map((p) => p.rationale),
+    recommendationPills: mergedRecPills,
+    teamDiagnosticPills: mergedTeamPills,
+    teamDiagnostics: mergedTeamPills,
   };
 };
 
@@ -1203,7 +1612,7 @@ router.get("/rankings", async (req, res) => {
         summary: dashboardSummary,
         aiInsights: null,
         aiStatus: "no-data",
-        insightEngine: "rules",
+        insightEngine: "sys",
         cached: false,
       });
     }
@@ -1226,7 +1635,7 @@ router.get("/rankings", async (req, res) => {
 
     let aiInsights = null;
     let aiStatus = "skipped";
-    let insightEngine = "rules";
+    let insightEngine = "sys";
     let cached = false;
     const allEmployees = sorted.map((entry) => ({
       name: entry.name,
@@ -1302,7 +1711,7 @@ router.get("/rankings", async (req, res) => {
           allEmployees,
         });
         aiStatus = "skipped";
-        insightEngine = "rules";
+        insightEngine = "sys";
       }
 
       return res.json({
@@ -1323,7 +1732,7 @@ router.get("/rankings", async (req, res) => {
     ) {
       aiInsights = cachedRankings.aiInsights;
       aiStatus = cachedRankings.aiStatus || "ready";
-      insightEngine = cachedRankings.insightEngine || "rules";
+      insightEngine = cachedRankings.insightEngine || "sys";
       cached = true;
     }
 
@@ -1371,7 +1780,7 @@ router.get("/rankings", async (req, res) => {
             allEmployees,
           });
           recordAiFallback("productivityRoutes.rankings.invalid-ai-output");
-          insightEngine = "rules";
+          insightEngine = "sys";
           aiStatus = "fallback";
         } else {
           insightEngine = "ai";
@@ -1399,7 +1808,7 @@ router.get("/rankings", async (req, res) => {
           allEmployees,
         });
         recordAiFallback("productivityRoutes.rankings.ai-call-failed");
-        insightEngine = "rules";
+        insightEngine = "sys";
         rankingsCache.set(rankingsKey, {
           aiInsights,
           aiStatus,
@@ -1413,7 +1822,7 @@ router.get("/rankings", async (req, res) => {
     if (!aiInsights && cachedRankings?.aiInsights) {
       aiInsights = cachedRankings.aiInsights;
       aiStatus = "ready";
-      insightEngine = cachedRankings.insightEngine || "rules";
+      insightEngine = cachedRankings.insightEngine || "sys";
       cached = true;
     }
 
@@ -1424,7 +1833,7 @@ router.get("/rankings", async (req, res) => {
         allEmployees,
       });
       recordAiFallback("productivityRoutes.rankings.empty-insights");
-      insightEngine = "rules";
+      insightEngine = "sys";
     }
 
     return res.json({
@@ -1587,7 +1996,7 @@ router.get("/:employeeId/insights", async (req, res) => {
         insights: lowDataAnalysis.insights,
         analysis: lowDataAnalysis,
         aiStatus: "low-data",
-        insightEngine: "rules",
+        insightEngine: "sys",
         lowData: true,
       });
     }
@@ -1596,48 +2005,91 @@ router.get("/:employeeId/insights", async (req, res) => {
       !forceRefresh &&
       !hasActionContext &&
       !postOutcomeFreshnessRequired &&
-      Array.isArray(employee.storedInsights) &&
-      employee.storedInsights.length > 0 &&
-      isFresh(employee.lastInsightUpdate, AI_INSIGHTS_TTL_MS)
+      isFresh(employee.lastInsightUpdate, AI_INSIGHTS_TTL_MS) &&
+      ((employee.storedInsightAnalysis &&
+        typeof employee.storedInsightAnalysis === "object") ||
+        (Array.isArray(employee.storedInsights) &&
+          employee.storedInsights.length > 0))
     ) {
-      const mergedCachedInsights = mergeWithAuthoritativeInsights(
-        structuredInsightsInput,
-        employee.storedInsights,
-      );
+      let cachedAnalysis = null;
+      if (
+        employee.storedInsightAnalysis &&
+        typeof employee.storedInsightAnalysis === "object"
+      ) {
+        const { persistedEngine: _pe, ...storedPayload } =
+          employee.storedInsightAnalysis;
+        cachedAnalysis = enrichEmployeeAnalysis(
+          storedPayload,
+          fallbackAnalysis,
+        );
+      } else if (
+        Array.isArray(employee.storedInsights) &&
+        employee.storedInsights.length
+      ) {
+        const legacyQuick = employee.storedInsights
+          .map((h) =>
+            normalizeInsightPill(
+              { headline: String(h), rationale: String(h) },
+              "sys",
+            ),
+          )
+          .filter(Boolean);
+        cachedAnalysis = enrichEmployeeAnalysis(
+          {
+            quickActionPills: legacyQuick.slice(0, 4),
+            insights: legacyQuick.slice(0, 4).map((p) => p.headline),
+          },
+          fallbackAnalysis,
+        );
+      } else {
+        cachedAnalysis = { ...fallbackAnalysis };
+      }
+
+      const persistedEngine = employee.storedInsightAnalysis?.persistedEngine;
+
       return res.json({
         stats,
-        insights: mergedCachedInsights,
-        analysis: {
-          ...fallbackAnalysis,
-          insights: mergedCachedInsights,
-        },
+        insights: cachedAnalysis.insights,
+        analysis: cachedAnalysis,
         cached: true,
         aiStatus: "cached",
-        insightEngine: "cached",
+        insightEngine: persistedEngine === "ai" ? "ai" : "sys",
       });
     }
 
     if (Date.now() < cooldownUntil) {
-      const fallbackInsights = mergeWithAuthoritativeInsights(
-        structuredInsightsInput,
-        !forceRefresh &&
-          !postOutcomeFreshnessRequired &&
-          Array.isArray(employee.storedInsights) &&
-          employee.storedInsights.length > 0
-          ? employee.storedInsights
-          : fallbackAnalysis.insights,
-      );
+      const partial =
+        employee.storedInsightAnalysis &&
+        typeof employee.storedInsightAnalysis === "object"
+          ? (() => {
+              const { persistedEngine: _pe, ...rest } =
+                employee.storedInsightAnalysis;
+              return rest;
+            })()
+          : Array.isArray(employee.storedInsights) &&
+              employee.storedInsights.length
+            ? {
+                quickActionPills: employee.storedInsights
+                  .map((h) =>
+                    normalizeInsightPill(
+                      { headline: String(h), rationale: String(h) },
+                      "sys",
+                    ),
+                  )
+                  .filter(Boolean),
+              }
+            : null;
+
+      const rateAnalysis = enrichEmployeeAnalysis(partial, fallbackAnalysis);
+
       return res.json({
         stats,
-        insights: fallbackInsights,
-        analysis: {
-          ...fallbackAnalysis,
-          insights: fallbackInsights,
-        },
+        insights: rateAnalysis.insights,
+        analysis: rateAnalysis,
         cached: true,
         rateLimited: true,
         aiStatus: "retry",
-        insightEngine: "rules",
+        insightEngine: "sys",
       });
     }
 
@@ -1645,7 +2097,7 @@ router.get("/:employeeId/insights", async (req, res) => {
     let insights = [];
     let analysis = null;
     let aiStatus = "fallback";
-    let insightEngine = "rules";
+    let insightEngine = "sys";
     if (hasAiClientConfig()) {
       try {
         const prompt = buildEmployeeInsightsPrompt({
@@ -1659,7 +2111,7 @@ router.get("/:employeeId/insights", async (req, res) => {
             context: "productivity-employee-insights",
             lockKey: insightsKey,
           });
-          return safeParseJson(raw, { insights: [] });
+          return safeParseJson(raw, {});
         };
 
         const inFlight = inFlightInsights.get(insightsKey);
@@ -1673,17 +2125,22 @@ router.get("/:employeeId/insights", async (req, res) => {
               return promise;
             })();
 
-        const normalizedAnalysis = normalizeEmployeeAiAnalysis(parsed);
-        if (normalizedAnalysis?.insights?.length) {
-          const mergedInsights = mergeWithAuthoritativeInsights(
-            structuredInsightsInput,
-            normalizedAnalysis.insights,
+        const normalizedAnalysis = normalizeEmployeeAiAnalysis(
+          parsed,
+          structuredInsightsInput.metrics || {},
+        );
+        const aiLooksValid =
+          normalizedAnalysis &&
+          (normalizedAnalysis.quickActionPills?.length ||
+            normalizedAnalysis.insights?.length ||
+            normalizedAnalysis.pattern);
+
+        if (aiLooksValid) {
+          analysis = enrichEmployeeAnalysis(
+            normalizedAnalysis,
+            fallbackAnalysis,
           );
-          analysis = {
-            ...normalizedAnalysis,
-            insights: mergedInsights,
-          };
-          insights = mergedInsights;
+          insights = analysis.insights;
           aiStatus = "ready";
           insightEngine = "ai";
         } else {
@@ -1693,13 +2150,14 @@ router.get("/:employeeId/insights", async (req, res) => {
             "productivityRoutes.employee-insights.invalid-ai-output",
           );
           aiStatus = "fallback";
-          insightEngine = "rules";
+          insightEngine = "sys";
         }
 
         // Store insights in database using atomic update to avoid version conflicts.
         await Employee.findByIdAndUpdate(employee._id, {
           $set: {
             storedInsights: insights,
+            storedInsightAnalysis: { ...analysis, persistedEngine: insightEngine },
             lastInsightUpdate: new Date(),
           },
         });
@@ -1714,20 +2172,32 @@ router.get("/:employeeId/insights", async (req, res) => {
           "AI insights generation failed, using fallback:",
           err.message,
         );
-        const fallbackInsights = mergeWithAuthoritativeInsights(
-          structuredInsightsInput,
-          Array.isArray(employee.storedInsights) &&
-            employee.storedInsights.length > 0
-            ? employee.storedInsights
-            : fallbackAnalysis.insights,
-        );
-        insights = fallbackInsights;
-        analysis = {
-          ...fallbackAnalysis,
-          insights: fallbackInsights,
-        };
+        const partial =
+          employee.storedInsightAnalysis &&
+          typeof employee.storedInsightAnalysis === "object"
+            ? (() => {
+                const { persistedEngine: _pe, ...rest } =
+                  employee.storedInsightAnalysis;
+                return rest;
+              })()
+            : Array.isArray(employee.storedInsights) &&
+                employee.storedInsights.length
+              ? {
+                  quickActionPills: employee.storedInsights
+                    .map((h) =>
+                      normalizeInsightPill(
+                        { headline: String(h), rationale: String(h) },
+                        "sys",
+                      ),
+                    )
+                    .filter(Boolean),
+                }
+              : null;
+
+        analysis = enrichEmployeeAnalysis(partial, fallbackAnalysis);
+        insights = analysis.insights;
         recordAiFallback("productivityRoutes.employee-insights.ai-call-failed");
-        insightEngine = "rules";
+        insightEngine = "sys";
       }
     } else {
       analysis = fallbackAnalysis;
@@ -1736,7 +2206,7 @@ router.get("/:employeeId/insights", async (req, res) => {
         "productivityRoutes.employee-insights.ai-skipped-no-config",
       );
       aiStatus = "skipped";
-      insightEngine = "rules";
+      insightEngine = "sys";
     }
 
     return res.json({

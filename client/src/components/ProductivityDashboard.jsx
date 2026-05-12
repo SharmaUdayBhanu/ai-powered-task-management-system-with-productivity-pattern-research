@@ -18,52 +18,78 @@ import {
   REALTIME_SOCKET_URL,
 } from "../lib/realtime";
 import ActionableInsightList from "./ActionableInsightList";
+import DataSourceBadge from "./DataSourceBadge";
 
 const ProductivityDashboard = ({ employee, theme = "dark" }) => {
   const [stats, setStats] = useState(null);
   const [chartData, setChartData] = useState(null);
   const [insights, setInsights] = useState([]);
   const [analysis, setAnalysis] = useState(null);
+  const [insightEngine, setInsightEngine] = useState("sys");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
   const fetchProductivityData = async (
     employeeId,
-    { forceInsights = false } = {},
+    {
+      forceInsights = false,
+      includeInsights = true,
+      silent = false,
+    } = {},
   ) => {
     const insightsPath = forceInsights
       ? `/productivity/${employeeId}/insights?force=true`
       : `/productivity/${employeeId}/insights`;
-    const [statsResult, chartResult, insightsResult] = await Promise.allSettled(
-      [
-        getWithRetry(`/productivity/${employeeId}/stats`, { maxRetries: 2 }),
-        getWithRetry(`/productivity/${employeeId}/chart-data`, {
-          maxRetries: 2,
-        }),
-        getWithRetry(insightsPath, { maxRetries: 2 }),
-      ],
+
+    const coreRequests = [
+      getWithRetry(`/productivity/${employeeId}/stats`, { maxRetries: 2 }),
+      getWithRetry(`/productivity/${employeeId}/chart-data`, {
+        maxRetries: 2,
+      }),
+    ];
+
+    const results = await Promise.allSettled(
+      includeInsights
+        ? [
+            ...coreRequests,
+            getWithRetry(insightsPath, { maxRetries: 2 }),
+          ]
+        : coreRequests,
     );
+
+    const statsResult = results[0];
+    const chartResult = results[1];
+    const insightsResult = includeInsights ? results[2] : null;
 
     const nextStats =
       statsResult.status === "fulfilled" ? statsResult.value.data : null;
     const nextChart =
       chartResult.status === "fulfilled" ? chartResult.value.data : null;
     const nextInsights =
-      insightsResult.status === "fulfilled"
+      insightsResult && insightsResult.status === "fulfilled"
         ? insightsResult.value.data?.insights || []
-        : [];
+        : null;
     const nextAnalysis =
-      insightsResult.status === "fulfilled"
+      insightsResult && insightsResult.status === "fulfilled"
         ? insightsResult.value.data?.analysis || null
+        : null;
+    const nextEngine =
+      insightsResult && insightsResult.status === "fulfilled"
+        ? insightsResult.value.data?.insightEngine || "sys"
         : null;
 
     if (nextStats) setStats(nextStats);
     if (nextChart) setChartData(nextChart);
-    setInsights(nextInsights);
-    setAnalysis(nextAnalysis);
+    if (includeInsights && nextInsights !== null) {
+      setInsights(nextInsights);
+      setAnalysis(nextAnalysis);
+      if (nextEngine) setInsightEngine(nextEngine);
+    }
 
     const hasCoreData = Boolean(nextStats && nextChart);
-    setError(hasCoreData ? "" : "Failed to load productivity data.");
+    if (!silent) {
+      setError(hasCoreData ? "" : "Failed to load productivity data.");
+    }
     return hasCoreData;
   };
 
@@ -78,7 +104,10 @@ const ProductivityDashboard = ({ employee, theme = "dark" }) => {
       setLoading(true);
       setError("");
       try {
-        await fetchProductivityData(employee._id);
+        await fetchProductivityData(employee._id, {
+          includeInsights: true,
+          silent: false,
+        });
       } catch (err) {
         setError(sanitizeApiError(err, "Failed to load productivity data."));
       } finally {
@@ -87,13 +116,16 @@ const ProductivityDashboard = ({ employee, theme = "dark" }) => {
     };
 
     fetchData();
-  }, [employee?._id, employee?.tasks?.length, employee?.tasks]);
+  }, [employee?._id]);
 
   useEffect(() => {
     if (!employee?._id) return;
 
     const intervalId = window.setInterval(() => {
-      fetchProductivityData(employee._id);
+      fetchProductivityData(employee._id, {
+        includeInsights: false,
+        silent: true,
+      }).catch(() => {});
     }, 45_000);
 
     return () => window.clearInterval(intervalId);
@@ -109,7 +141,10 @@ const ProductivityDashboard = ({ employee, theme = "dark" }) => {
 
     const refreshData = async () => {
       try {
-        await fetchProductivityData(employee._id);
+        await fetchProductivityData(employee._id, {
+          includeInsights: false,
+          silent: true,
+        });
       } catch (err) {
         console.warn("Failed to refresh productivity data:", err);
       }
@@ -125,7 +160,11 @@ const ProductivityDashboard = ({ employee, theme = "dark" }) => {
 
     socket.on("taskStatusChanged", ({ email }) => {
       if (employee.email !== email) return;
-      fetchProductivityData(employee._id, { forceInsights: true }).catch(() => {
+      fetchProductivityData(employee._id, {
+        forceInsights: true,
+        includeInsights: true,
+        silent: true,
+      }).catch(() => {
         refreshData();
       });
     });
@@ -151,13 +190,32 @@ const ProductivityDashboard = ({ employee, theme = "dark" }) => {
               taskDescription: taskDescription || "",
               taskStatus,
             });
-            const insightsRes = await getWithRetry(
-              `/productivity/${employeeId}/insights?${params.toString()}`,
-              { maxRetries: 2 },
-            );
-            setInsights(insightsRes.data.insights || []);
-            setAnalysis(insightsRes.data.analysis || null);
-            await fetchProductivityData(employee._id, { forceInsights: true });
+            const [insightsRes, statsResult, chartResult] =
+              await Promise.allSettled([
+                getWithRetry(
+                  `/productivity/${employeeId}/insights?${params.toString()}`,
+                  { maxRetries: 2 },
+                ),
+                getWithRetry(`/productivity/${employeeId}/stats`, {
+                  maxRetries: 2,
+                }),
+                getWithRetry(`/productivity/${employeeId}/chart-data`, {
+                  maxRetries: 2,
+                }),
+              ]);
+            if (insightsRes.status === "fulfilled") {
+              setInsights(insightsRes.value.data?.insights || []);
+              setAnalysis(insightsRes.value.data?.analysis || null);
+              if (insightsRes.value.data?.insightEngine) {
+                setInsightEngine(insightsRes.value.data.insightEngine);
+              }
+            }
+            if (statsResult.status === "fulfilled") {
+              setStats(statsResult.value.data);
+            }
+            if (chartResult.status === "fulfilled") {
+              setChartData(chartResult.value.data);
+            }
           } catch (err) {
             console.warn("Failed to refresh insights:", err);
             refreshData();
@@ -172,6 +230,8 @@ const ProductivityDashboard = ({ employee, theme = "dark" }) => {
   }, [employee?._id, employee?.email]);
 
   if (!employee) return null;
+
+  const narrativeSource = insightEngine === "ai" ? "AI" : "SYS";
 
   const performanceScore = Number(stats?.productivityScore ?? 0);
 
@@ -409,13 +469,13 @@ const ProductivityDashboard = ({ employee, theme = "dark" }) => {
                 </p>
                 <div className="mt-2">
                   <ActionableInsightList
-                    items={insights}
+                    items={analysis?.quickActionPills || insights}
                     fallbackItems={[
-                      "Your completion consistency shapes your weekly score and workload confidence.",
+                      "Complete one more task this week to strengthen your completion sample.",
                     ]}
-                    limit={3}
+                    limit={4}
                     theme={theme}
-                    source={analysis?.source || (analysis ? "AI" : "System")}
+                    source={narrativeSource}
                   />
                 </div>
               </div>
@@ -431,21 +491,19 @@ const ProductivityDashboard = ({ employee, theme = "dark" }) => {
                 </p>
                 <div className="mt-2">
                   <ActionableInsightList
-                    items={analysis?.riskSignals || []}
+                    items={analysis?.riskPills || []}
                     fallbackItems={[
-                      "Start your highest-priority task in your peak hour window.",
-                      "Keep daily completion cadence above your previous 7-day average.",
-                      "Review one delayed task cause and create a prevention step.",
+                      `Watch failed-task volume (${stats?.failedTaskCount ?? 0}) against completions before taking on new scope.`,
                     ]}
-                    limit={3}
+                    limit={4}
                     theme={theme}
-                    source={analysis?.source || (analysis ? "AI" : "System")}
+                    source={narrativeSource}
                   />
                 </div>
               </div>
             </div>
 
-            <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3">
+            <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
               <div
                 className={`rounded-lg border p-3 ${
                   theme === "dark"
@@ -459,6 +517,7 @@ const ProductivityDashboard = ({ employee, theme = "dark" }) => {
                 <p className="mt-1 text-xs leading-relaxed opacity-90">
                   {analysis?.pattern ||
                     "Execution pattern will appear as more completed history is observed."}
+                  <DataSourceBadge source={narrativeSource} className="inline" />
                 </p>
               </div>
 
@@ -475,6 +534,7 @@ const ProductivityDashboard = ({ employee, theme = "dark" }) => {
                 <p className="mt-1 text-xs leading-relaxed opacity-90">
                   {analysis?.specialization ||
                     "Specialization signal will appear once category-performance patterns become clearer."}
+                  <DataSourceBadge source={narrativeSource} className="inline" />
                 </p>
               </div>
 
@@ -496,6 +556,49 @@ const ProductivityDashboard = ({ employee, theme = "dark" }) => {
                   :{" "}
                   {analysis?.changeDetection?.reason ||
                     "No major week-over-week shift detected."}
+                  <DataSourceBadge source={narrativeSource} className="inline" />
+                </p>
+              </div>
+
+              <div
+                className={`rounded-lg border p-3 ${
+                  theme === "dark"
+                    ? "border-white/10 bg-white/5"
+                    : "border-gray-200 bg-gray-50"
+                }`}
+              >
+                <p className="text-xs font-semibold uppercase tracking-wide opacity-70">
+                  Workload outlook
+                </p>
+                <p className="mt-1 text-xs leading-relaxed opacity-90">
+                  {analysis?.workloadOutlook ? (
+                    <>
+                      <span className="font-semibold text-[11px]">
+                        {analysis.workloadOutlook.headline}
+                      </span>
+                      <span className="opacity-90">
+                        {" "}
+                        — {analysis.workloadOutlook.rationale}
+                      </span>
+                      <DataSourceBadge
+                        source={
+                          analysis.workloadOutlook.source === "ai"
+                            ? "AI"
+                            : "SYS"
+                        }
+                        className="inline"
+                      />
+                    </>
+                  ) : (
+                    <>
+                      Outlook appears once active and new task counts stabilize
+                      in the feed.
+                      <DataSourceBadge
+                        source={narrativeSource}
+                        className="inline"
+                      />
+                    </>
+                  )}
                 </p>
               </div>
             </div>
