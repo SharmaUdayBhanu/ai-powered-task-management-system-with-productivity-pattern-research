@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import axios from "axios";
-import API_URL from "../lib/apiClient";
+import { postWithRetry } from "../lib/apiClient";
 import DataSourceBadge from "./DataSourceBadge";
 
 const ExplainTaskModal = ({
@@ -153,6 +152,7 @@ const ExplainTaskModal = ({
         String(item.assignedEmail || "").toLowerCase() !==
         String(employeeEmail || "").toLowerCase()
       ) {
+        setSubtaskPending((prev) => ({ ...prev, [item.id]: false }));
         return;
       }
       if (item.groupIndex === undefined) return;
@@ -174,9 +174,10 @@ const ExplainTaskModal = ({
         }),
       );
       try {
-        const response = await axios.post(
-          `${API_URL}/group-tasks/${groupId}/subtasks/${item.groupIndex}/toggle`,
+        const response = await postWithRetry(
+          `/group-tasks/${groupId}/subtasks/${item.groupIndex}/toggle`,
           { employeeEmail, completed: nextCompleted },
+          { maxRetries: 2 },
         );
         if (Array.isArray(response.data?.assignments)) {
           setAssignmentState(response.data.assignments);
@@ -206,9 +207,10 @@ const ExplainTaskModal = ({
       // ignore storage failures
     }
     try {
-      const response = await axios.post(
-        `${API_URL}/employees/${employeeEmail}/tasks/${taskId}/subtasks/${item.stepIndex}/toggle`,
-        { completed: nextCheckedMap[item.id] }
+      const response = await postWithRetry(
+        `/employees/${employeeEmail}/tasks/${taskId}/subtasks/${item.stepIndex}/toggle`,
+        { completed: nextCheckedMap[item.id] },
+        { maxRetries: 2 },
       );
       const nextChecks = Array.isArray(response.data?.stepChecks)
         ? response.data.stepChecks

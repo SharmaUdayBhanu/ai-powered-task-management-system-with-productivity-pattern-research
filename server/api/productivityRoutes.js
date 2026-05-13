@@ -1749,7 +1749,7 @@ router.get("/rankings", async (req, res) => {
 
         const computeRankingsInsights = async () => {
           const raw = await callGemini(prompt, {
-            maxRetries: 1,
+            maxRetries: 2,
             baseDelayMs: 2000,
             context: "productivity-rankings-admin-insights",
             lockKey: rankingsKey,
@@ -2106,7 +2106,7 @@ router.get("/:employeeId/insights", async (req, res) => {
 
         const computeInsights = async () => {
           const raw = await callGemini(prompt, {
-            maxRetries: 1,
+            maxRetries: 2,
             baseDelayMs: 2000,
             context: "productivity-employee-insights",
             lockKey: insightsKey,

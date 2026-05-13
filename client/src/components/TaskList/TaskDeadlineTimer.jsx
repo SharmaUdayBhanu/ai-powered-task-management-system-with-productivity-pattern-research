@@ -54,6 +54,19 @@ const parseDurationMinutes = (value) => {
   return 0;
 };
 
+const taskDateEndOfDayMs = (taskDate) => {
+  if (!taskDate) return null;
+  const dateDeadline = new Date(taskDate);
+  if (Number.isNaN(dateDeadline.getTime())) return null;
+  if (
+    typeof taskDate === "string" &&
+    /^\d{4}-\d{2}-\d{2}$/.test(taskDate)
+  ) {
+    dateDeadline.setHours(23, 59, 59, 999);
+  }
+  return dateDeadline.getTime();
+};
+
 const TaskDeadlineTimer = ({ task, employeeEmail, theme = "dark" }) => {
   const [now, setNow] = useState(Date.now());
 
@@ -86,10 +99,22 @@ const TaskDeadlineTimer = ({ task, employeeEmail, theme = "dark" }) => {
     return Number.isNaN(parsed) ? null : parsed;
   }, [task?.startedAt, task?.acceptedAt, task?.assignedAt]);
 
-  const deadlineMs =
+  const calendarDeadlineMs = useMemo(
+    () => taskDateEndOfDayMs(task?.taskDate),
+    [task?.taskDate],
+  );
+
+  const durationDeadlineMs =
     startTimeMs && resolvedEstimatedMinutes > 0
       ? startTimeMs + resolvedEstimatedMinutes * 60 * 1000
       : null;
+
+  const effectiveWorkDeadlineMs = useMemo(() => {
+    if (durationDeadlineMs && calendarDeadlineMs) {
+      return Math.min(durationDeadlineMs, calendarDeadlineMs);
+    }
+    return durationDeadlineMs ?? calendarDeadlineMs;
+  }, [durationDeadlineMs, calendarDeadlineMs]);
 
   const acceptanceDeadlineMs = useMemo(() => {
     if (task?.acceptanceDeadline) {
@@ -104,36 +129,36 @@ const TaskDeadlineTimer = ({ task, employeeEmail, theme = "dark" }) => {
       return assignedAtMs + acceptanceTimeLimitMinutes * 60 * 1000;
     }
 
-    if (task?.taskDate) {
-      const dateDeadline = new Date(task.taskDate);
-      if (!Number.isNaN(dateDeadline.getTime())) {
-        if (
-          typeof task.taskDate === "string" &&
-          /^\d{4}-\d{2}-\d{2}$/.test(task.taskDate)
-        ) {
-          dateDeadline.setHours(23, 59, 59, 999);
-        }
-        return dateDeadline.getTime();
-      }
-    }
-
-    return null;
+    return calendarDeadlineMs;
   }, [
     task?.acceptanceDeadline,
     task?.assignedAt,
     acceptanceTimeLimitMinutes,
-    task?.taskDate,
+    calendarDeadlineMs,
   ]);
 
   useEffect(() => {
-    const hasRunningCountdown =
-      (task?.newTask && !task?.acceptedAt && acceptanceDeadlineMs) ||
-      deadlineMs;
+    const pendingAcceptance =
+      task?.newTask && !task?.acceptedAt && acceptanceDeadlineMs;
+    const activeWorkCountdown =
+      task?.active &&
+      !task?.completed &&
+      !task?.failed &&
+      !task?.newTask &&
+      Boolean(effectiveWorkDeadlineMs);
 
-    if (!hasRunningCountdown) return;
+    if (!pendingAcceptance && !activeWorkCountdown) return;
     const id = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(id);
-  }, [deadlineMs, acceptanceDeadlineMs, task?.newTask, task?.acceptedAt]);
+  }, [
+    acceptanceDeadlineMs,
+    effectiveWorkDeadlineMs,
+    task?.newTask,
+    task?.acceptedAt,
+    task?.active,
+    task?.completed,
+    task?.failed,
+  ]);
 
   const badgeClass =
     theme === "dark"
@@ -159,14 +184,54 @@ const TaskDeadlineTimer = ({ task, employeeEmail, theme = "dark" }) => {
     );
   }
 
+  const showActiveWorkTimer =
+    task?.active &&
+    !task?.completed &&
+    !task?.failed &&
+    !task?.newTask &&
+    Boolean(effectiveWorkDeadlineMs);
+
+  if (showActiveWorkTimer) {
+    const remainingMs = effectiveWorkDeadlineMs - now;
+
+    if (remainingMs >= 0) {
+      return (
+        <span className={badgeClass}>
+          Time left: {formatDuration(remainingMs)}
+        </span>
+      );
+    }
+
+    return (
+      <span className={badgeClass}>
+        Overdue by: {formatDuration(Math.abs(remainingMs))}
+      </span>
+    );
+  }
+
   if (!resolvedEstimatedMinutes || resolvedEstimatedMinutes <= 0) {
     if (estimationPending) {
       return <span className={badgeClass}>Estimating...</span>;
     }
+    if (calendarDeadlineMs && startTimeMs) {
+      const remainingMs = calendarDeadlineMs - now;
+      if (remainingMs >= 0) {
+        return (
+          <span className={badgeClass}>
+            Due date: {formatDuration(remainingMs)} left
+          </span>
+        );
+      }
+      return (
+        <span className={badgeClass}>
+          Past due date by: {formatDuration(Math.abs(remainingMs))}
+        </span>
+      );
+    }
     return <span className={badgeClass}>Time limit: 60 min (fallback)</span>;
   }
 
-  if (!deadlineMs) {
+  if (!startTimeMs) {
     return (
       <span className={badgeClass}>
         Time limit: {resolvedEstimatedMinutes} min (starts on accept)
@@ -174,7 +239,18 @@ const TaskDeadlineTimer = ({ task, employeeEmail, theme = "dark" }) => {
     );
   }
 
-  const remainingMs = deadlineMs - now;
+  const legacyDeadlineMs =
+    durationDeadlineMs ||
+    (calendarDeadlineMs ? calendarDeadlineMs : null);
+  if (!legacyDeadlineMs) {
+    return (
+      <span className={badgeClass}>
+        Time limit: {resolvedEstimatedMinutes} min (starts on accept)
+      </span>
+    );
+  }
+
+  const remainingMs = legacyDeadlineMs - now;
 
   if (remainingMs >= 0) {
     return (

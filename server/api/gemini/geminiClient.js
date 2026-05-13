@@ -192,7 +192,7 @@ export async function callGemini(prompt, options = {}) {
   }
   const groq = new Groq({ apiKey });
 
-  const maxRetries = Math.max(0, Math.min(1, Number(options.maxRetries ?? 1)));
+  const maxRetries = Math.max(0, Math.min(4, Number(options.maxRetries ?? 1)));
   const baseDelayMs = clampRetryDelayMs(
     options.baseDelayMs ?? MIN_RETRY_DELAY_MS,
   );

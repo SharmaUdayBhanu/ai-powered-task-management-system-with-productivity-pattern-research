@@ -20,6 +20,22 @@ const FILTER_OPTIONS = [
 ];
 
 const getTaskId = (task) => task._id || `${task.taskTitle}-${task.taskDate}`;
+
+const dedupeTasksByStableId = (tasks = []) => {
+  const seen = new Set();
+  const result = [];
+  for (const task of tasks) {
+    const id = task?._id != null ? String(task._id) : "";
+    const key =
+      id ||
+      `fb:${String(task?.groupId || "")}:${task?.taskTitle}:${task?.taskDate}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(task);
+  }
+  return result;
+};
+
 const getTaskAliasIds = (task) => {
   const ids = [];
   if (task?._id) ids.push(task._id);
@@ -108,7 +124,7 @@ const TaskList = ({ data, onAccept, vertical, theme, onModalStateChange }) => {
   });
 
   const visibleTasks = useMemo(() => {
-    const mergedTasks = (data.tasks || []).map((task) => {
+    const mergedTasks = dedupeTasksByStableId(data.tasks || []).map((task) => {
       const aliases = getTaskAliasIds(task);
       const override = aliases.map((id) => taskOverrides[id]).find(Boolean);
       return override ? { ...task, ...override } : task;

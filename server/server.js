@@ -94,6 +94,22 @@ const addDaysToTaskDate = (taskDateValue, daysToAdd) => {
   return base;
 };
 
+/** YYYY-MM-DD must be today or later (UTC calendar day). */
+const isTaskDueDateInPast = (taskDateValue) => {
+  const str = String(taskDateValue || "").trim();
+  const m = str.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return false;
+  const picked = new Date(
+    Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])),
+  );
+  if (Number.isNaN(picked.getTime())) return false;
+  const now = new Date();
+  const todayUtc = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
+  );
+  return picked.getTime() < todayUtc.getTime();
+};
+
 const computeOnTime = (completedAt, taskDateValue) => {
   const deadline = toTaskDeadline(taskDateValue);
   if (!completedAt) return null;
@@ -2034,6 +2050,11 @@ app.post("/api/employees/:email/tasks", async (req, res) => {
   try {
     const emp = await Employee.findOne({ email: req.params.email });
     if (emp) {
+      if (req.body?.taskDate && isTaskDueDateInPast(req.body.taskDate)) {
+        return res.status(400).json({
+          error: "Task due date cannot be in the past.",
+        });
+      }
       const ioInstance = req.app.get("io");
       const now = new Date();
       const requestedEstimatedDuration = Number(req.body.estimatedDuration);
@@ -2144,6 +2165,12 @@ app.post("/api/group-tasks", async (req, res) => {
     }
 
     const now = new Date();
+    if (req.body?.taskDate && isTaskDueDateInPast(req.body.taskDate)) {
+      return res.status(400).json({
+        error: "Task due date cannot be in the past.",
+      });
+    }
+
     const groupId = `group-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const members = buildGroupMembers(employees);
     const requestedEstimatedDuration = Number(req.body.estimatedDuration);
@@ -2373,9 +2400,10 @@ app.post(
         const task = emp.tasks.find((item) => item.groupId === groupId);
         if (!task) continue;
         task.groupStepAssignments = assignments;
-        await emp.save();
         updatedEmployees.push(emp);
       }
+
+      await Promise.all(updatedEmployees.map((emp) => emp.save()));
 
       const assignmentsUpdated = assignments;
 

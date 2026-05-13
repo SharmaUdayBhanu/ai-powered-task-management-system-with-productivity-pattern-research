@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
+import { postWithRetry } from "../../lib/apiClient";
 import TaskDeadlineTimer from "./TaskDeadlineTimer";
 import TaskRiskBadge from "./TaskRiskBadge";
 import GroupTaskBadge from "./GroupTaskBadge";
@@ -416,9 +417,10 @@ const AcceptTask = ({
       );
 
       try {
-        const response = await axios.post(
-          `${API_URL}/group-tasks/${data.groupId}/subtasks/${item.groupIndex}/toggle`,
+        const response = await postWithRetry(
+          `/group-tasks/${data.groupId}/subtasks/${item.groupIndex}/toggle`,
           { employeeEmail: data.email, completed: nextCompleted },
+          { maxRetries: 2 },
         );
         if (Array.isArray(response.data?.assignments)) {
           setGroupAssignments(response.data.assignments);
@@ -455,9 +457,10 @@ const AcceptTask = ({
       return nextPayload;
     });
     try {
-      const response = await axios.post(
-        `${API_URL}/employees/${data.email}/tasks/${data._id}/subtasks/${item.stepIndex}/toggle`,
-        { completed: optimisticMap[item.id] }
+      const response = await postWithRetry(
+        `/employees/${data.email}/tasks/${data._id}/subtasks/${item.stepIndex}/toggle`,
+        { completed: optimisticMap[item.id] },
+        { maxRetries: 2 },
       );
       const stepChecks = Array.isArray(response.data?.stepChecks)
         ? response.data.stepChecks

@@ -49,6 +49,31 @@ const computeTaskCounts = (tasks = []) => ({
   failed: tasks.filter((task) => task.failed && !task.isDeleted && !task.notAccepted).length,
 });
 
+const dedupeEmployeeTasks = (tasks = []) => {
+  const seen = new Set();
+  const result = [];
+  for (const task of tasks) {
+    const id = task?._id != null ? String(task._id) : "";
+    const key =
+      id ||
+      `fb:${String(task?.groupId || "")}:${task?.taskTitle}:${task?.taskDate}:${task?.email || ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(task);
+  }
+  return result;
+};
+
+const withDedupedTasks = (employee) => {
+  if (!employee || !Array.isArray(employee.tasks)) return employee;
+  const tasks = dedupeEmployeeTasks(employee.tasks);
+  return {
+    ...employee,
+    tasks,
+    taskCounts: computeTaskCounts(tasks),
+  };
+};
+
 const EmployeeDashboard = ({ data }) => {
   const [employee, setEmployee] = useState(data);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -63,7 +88,7 @@ const EmployeeDashboard = ({ data }) => {
       const res = await getWithRetry(`/employees/${data.email}`, {
         maxRetries: 2,
       });
-      setEmployee(res.data);
+      setEmployee(withDedupedTasks(res.data));
       setError("");
     } catch (err) {
       setEmployee((prev) => prev || data);
@@ -100,7 +125,7 @@ const EmployeeDashboard = ({ data }) => {
 
     socket.on("employeeUpdated", ({ email, employee }) => {
       if (email === data.email) {
-        setEmployee(employee);
+        setEmployee(withDedupedTasks(employee));
       }
     });
 
@@ -123,7 +148,7 @@ const EmployeeDashboard = ({ data }) => {
             existingTask.taskDescription === task.taskDescription
           );
         });
-        const tasks = alreadyExists
+        const tasksRaw = alreadyExists
           ? (prev.tasks || []).map((existingTask) => {
               const sameId =
                 taskId && String(existingTask._id || "") === taskId;
@@ -136,6 +161,7 @@ const EmployeeDashboard = ({ data }) => {
                 : existingTask;
             })
           : [...(prev.tasks || []), task];
+        const tasks = dedupeEmployeeTasks(tasksRaw);
         return { ...prev, tasks, taskCounts: computeTaskCounts(tasks) };
       });
     });
@@ -144,7 +170,7 @@ const EmployeeDashboard = ({ data }) => {
       "taskExplanationGenerated",
       ({ employeeEmail, updatedEmployee }) => {
         if (employeeEmail === data.email && updatedEmployee) {
-          setEmployee(updatedEmployee);
+          setEmployee(withDedupedTasks(updatedEmployee));
         }
       },
     );
@@ -158,7 +184,7 @@ const EmployeeDashboard = ({ data }) => {
         if (!prev) return prev;
         const updatedTask = payload.updatedTask;
         const updatedTaskId = String(updatedTask._id || payload.taskId || "");
-        const tasks = (prev.tasks || []).map((task) => {
+        const tasksRaw = (prev.tasks || []).map((task) => {
           const sameId =
             updatedTaskId && String(task._id || "") === updatedTaskId;
           const sameFallback =
@@ -167,6 +193,7 @@ const EmployeeDashboard = ({ data }) => {
             task.taskDescription === updatedTask.taskDescription;
           return sameId || sameFallback ? { ...task, ...updatedTask } : task;
         });
+        const tasks = dedupeEmployeeTasks(tasksRaw);
         return { ...prev, tasks, taskCounts: computeTaskCounts(tasks) };
       });
       return;

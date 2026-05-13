@@ -8,6 +8,30 @@ import EmployeeAutocomplete, {
 
 const API_URL = `${import.meta.env.VITE_API_URL || ""}/api`;
 
+/** Matches server: due date YYYY-MM-DD vs UTC calendar "today". */
+function utcCalendarTodayStr() {
+  const now = new Date();
+  const y = now.getUTCFullYear();
+  const mo = String(now.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(now.getUTCDate()).padStart(2, "0");
+  return `${y}-${mo}-${d}`;
+}
+
+function isTaskDueDatePastUtc(taskDateValue) {
+  const str = String(taskDateValue || "").trim();
+  const m = str.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return false;
+  const picked = new Date(
+    Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])),
+  );
+  if (Number.isNaN(picked.getTime())) return false;
+  const now = new Date();
+  const todayUtc = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
+  );
+  return picked.getTime() < todayUtc.getTime();
+}
+
 const CreateTask = ({ onTaskCreated, theme, employees = [] }) => {
   const [form, setForm] = useState({
     email: "",
@@ -41,6 +65,11 @@ const CreateTask = ({ onTaskCreated, theme, employees = [] }) => {
 
       if (isGroupTask && groupEmails.length < 2) {
         setError("Select at least two valid employees for a group task");
+        return;
+      }
+
+      if (form.taskDate && isTaskDueDatePastUtc(form.taskDate)) {
+        setError("Task due date cannot be in the past.");
         return;
       }
 
@@ -88,7 +117,12 @@ const CreateTask = ({ onTaskCreated, theme, employees = [] }) => {
       if (onTaskCreated) onTaskCreated();
       return;
     } catch (err) {
-      setError("Employee not found or error creating task");
+      const apiMsg = err?.response?.data?.error;
+      setError(
+        typeof apiMsg === "string" && apiMsg.trim()
+          ? apiMsg.trim()
+          : "Employee not found or error creating task",
+      );
     } finally {
       setLoading(false);
     }
@@ -156,6 +190,7 @@ const CreateTask = ({ onTaskCreated, theme, employees = [] }) => {
       <input
         type="date"
         name="taskDate"
+        min={utcCalendarTodayStr()}
         value={form.taskDate}
         onChange={handleChange}
         className={

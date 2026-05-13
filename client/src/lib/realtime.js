@@ -5,6 +5,8 @@ export const REALTIME_SOCKET_URL =
 
 export const REALTIME_SOCKET_OPTIONS = {
   transports: ["websocket", "polling"],
-  reconnectionAttempts: 2,
-  timeout: 5000,
+  reconnectionAttempts: 25,
+  reconnectionDelay: 800,
+  reconnectionDelayMax: 12000,
+  timeout: 20000,
 };
