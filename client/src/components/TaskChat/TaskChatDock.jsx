@@ -68,7 +68,8 @@ const normalizeTasks = ({ tasks = [], isAdmin = false, userEmail = "" }) => {
     if (task.notAccepted) return;
 
     const taskOwnerEmail = task.ownerEmail || userEmail;
-    const isOwner = normalizeEmail(taskOwnerEmail) === normalizeEmail(userEmail);
+    const isOwner =
+      normalizeEmail(taskOwnerEmail) === normalizeEmail(userEmail);
     if (!isAdmin && !isOwner) return;
 
     singleTasks.push({
@@ -148,15 +149,15 @@ const TaskChatDock = ({
 
   const isSingleOwner = Boolean(
     selectedTask &&
-      !selectedTask.groupId &&
-      (!selectedTask.ownerEmail ||
-        normalizeEmail(user.email) === normalizeEmail(selectedTask.ownerEmail)),
+    !selectedTask.groupId &&
+    (!selectedTask.ownerEmail ||
+      normalizeEmail(user.email) === normalizeEmail(selectedTask.ownerEmail)),
   );
   const canChat = Boolean(
     selectedTask &&
-      (selectedTask.groupId
-        ? !selectedTask.chatClosed
-        : (!selectedTask.chatClosed && (isSingleOwner || isAdmin))),
+    (selectedTask.groupId
+      ? !selectedTask.chatClosed
+      : !selectedTask.chatClosed && (isSingleOwner || isAdmin)),
   );
 
   const hasUnread = useMemo(
@@ -170,8 +171,6 @@ const TaskChatDock = ({
       setSelectedKey(chatTasks[0].key);
     }
   }, [chatTasks, selectedKey]);
-
-
 
   const isAcceptedNotice = useCallback((message) => {
     if (message?.type !== "system") return false;
@@ -274,7 +273,8 @@ const TaskChatDock = ({
 
   const scrollToBottom = (behavior = "smooth") => {
     if (!scrollRef.current) return;
-    const maxScrollTop = scrollRef.current.scrollHeight - scrollRef.current.clientHeight;
+    const maxScrollTop =
+      scrollRef.current.scrollHeight - scrollRef.current.clientHeight;
     if (maxScrollTop > 0) {
       scrollRef.current.scrollTop = maxScrollTop;
     }
@@ -361,9 +361,8 @@ const TaskChatDock = ({
     setAssistantError("");
     const isSingleTask = !selectedTask.groupId;
     const savyMatch = trimmed.match(/@savy\b/i);
-    const savyQuestion = (!isAdmin && savyMatch)
-      ? trimmed.replace(savyMatch[0], "").trim()
-      : "";
+    const savyQuestion =
+      !isAdmin && savyMatch ? trimmed.replace(savyMatch[0], "").trim() : "";
     const signature = `${normalizeEmail(user.email)}|${trimmed}`;
     const optimisticMessage = {
       messageId: `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -393,7 +392,11 @@ const TaskChatDock = ({
           `${API_URL}/group-tasks/${selectedTask.groupId}/chat/messages`,
           payload,
         );
-      } else if (isSingleTask && selectedTask.taskId && selectedTask.ownerEmail) {
+      } else if (
+        isSingleTask &&
+        selectedTask.taskId &&
+        selectedTask.ownerEmail
+      ) {
         await axios.post(
           `${API_URL}/employees/${selectedTask.ownerEmail}/tasks/${selectedTask.taskId}/chat/messages`,
           payload,
@@ -522,12 +525,12 @@ const TaskChatDock = ({
       if (isGroup) {
         await axios.post(
           `${API_URL}/group-tasks/${contextTask.groupId}/chat/messages`,
-          payload
+          payload,
         );
       } else if (contextTask._id && (contextTask.ownerEmail || user?.email)) {
         await axios.post(
           `${API_URL}/employees/${contextTask.ownerEmail || user.email}/tasks/${contextTask._id}/chat/messages`,
-          payload
+          payload,
         );
       }
 
@@ -770,16 +773,33 @@ const TaskChatDock = ({
                           <span className="flex items-center gap-1">
                             {formatTimestamp(message.createdAt)}
                             {isOwn && (
-                              <svg 
-                                className={`w-3 h-3 ${message.__signature ? "text-gray-400" : "text-cyan-400"}`} 
-                                fill="none" viewBox="0 0 24 24" stroke="currentColor"
+                              <svg
+                                className={`w-3 h-3 ${message.__signature ? "text-gray-400" : "text-cyan-400"}`}
+                                fill="none"
+                                viewBox="0 0 24 24"
+                                stroke="currentColor"
                               >
                                 {message.__signature ? (
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                                  <path
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                    strokeWidth={2}
+                                    d="M5 13l4 4L19 7"
+                                  />
                                 ) : (
                                   <>
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 13l4 4L23 7" />
+                                    <path
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      strokeWidth={2}
+                                      d="M5 13l4 4L19 7"
+                                    />
+                                    <path
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      strokeWidth={2}
+                                      d="M11 13l4 4L23 7"
+                                    />
                                   </>
                                 )}
                               </svg>
@@ -813,13 +833,26 @@ const TaskChatDock = ({
                   </div>
                 );
               })}
-              
+
               {(sending || assistantLoading) && (
-                <div className={`flex ${sending ? "justify-end" : "justify-start"} animate-slide-up-fade`}>
-                  <div className={`rounded-full px-4 py-2 text-xs flex items-center gap-1.5 ${isDark ? "bg-white/10" : "bg-gray-100"}`}>
-                    <div className="w-1.5 h-1.5 bg-current rounded-full animate-bounce" style={{animationDelay: "0s"}}></div>
-                    <div className="w-1.5 h-1.5 bg-current rounded-full animate-bounce" style={{animationDelay: "0.15s"}}></div>
-                    <div className="w-1.5 h-1.5 bg-current rounded-full animate-bounce" style={{animationDelay: "0.3s"}}></div>
+                <div
+                  className={`flex ${sending ? "justify-end" : "justify-start"} animate-slide-up-fade`}
+                >
+                  <div
+                    className={`rounded-full px-4 py-2 text-xs flex items-center gap-1.5 ${isDark ? "bg-white/10" : "bg-gray-100"}`}
+                  >
+                    <div
+                      className="w-1.5 h-1.5 bg-current rounded-full animate-bounce"
+                      style={{ animationDelay: "0s" }}
+                    ></div>
+                    <div
+                      className="w-1.5 h-1.5 bg-current rounded-full animate-bounce"
+                      style={{ animationDelay: "0.15s" }}
+                    ></div>
+                    <div
+                      className="w-1.5 h-1.5 bg-current rounded-full animate-bounce"
+                      style={{ animationDelay: "0.3s" }}
+                    ></div>
                   </div>
                 </div>
               )}
