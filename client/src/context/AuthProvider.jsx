@@ -1,11 +1,7 @@
 import { createContext, useState, useEffect } from "react";
 import axios from "axios";
-import { io } from "socket.io-client";
-import {
-  ENABLE_REALTIME,
-  REALTIME_SOCKET_OPTIONS,
-  REALTIME_SOCKET_URL,
-} from "../lib/realtime";
+import { ENABLE_REALTIME } from "../lib/realtime";
+import getSocket from "../lib/socket";
 
 export const AuthContext = createContext();
 
@@ -42,53 +38,58 @@ const AuthProvider = ({ children }) => {
       return undefined;
     }
 
-    const socket = io(REALTIME_SOCKET_URL, REALTIME_SOCKET_OPTIONS);
+    const socket = getSocket();
 
-    socket.on("employeeUpdated", ({ email, employee }) => {
+    const onEmployeeUpdated = ({ email, employee }) => {
+      setUserData((prev) => ({
+        ...prev,
+        employees: prev.employees.map((e) => (e.email === email ? employee : e)),
+      }));
+    };
+
+    const onTaskCreated = ({ email, task }) => {
       setUserData((prev) => ({
         ...prev,
         employees: prev.employees.map((e) =>
-          e.email === email ? employee : e,
+          e.email === email ? { ...e, tasks: [...(e.tasks || []), task] } : e,
         ),
       }));
-    });
+    };
 
-    socket.on("taskCreated", ({ email, task }) => {
-      setUserData((prev) => ({
-        ...prev,
-        employees: prev.employees.map((e) =>
-          e.email === email ? { ...e, tasks: [...e.tasks, task] } : e,
-        ),
-      }));
-    });
-
-    socket.on(
-      "taskExplanationGenerated",
-      ({ employeeEmail, updatedEmployee }) => {
-        if (updatedEmployee) {
-          setUserData((prev) => ({
-            ...prev,
-            employees: prev.employees.map((e) =>
-              e.email === employeeEmail ? updatedEmployee : e,
-            ),
-          }));
-        }
-      },
-    );
-
-    socket.on("taskStatusChanged", ({ email, employee }) => {
-      if (employee) {
+    const onTaskExplanationGenerated = ({ employeeEmail, updatedEmployee }) => {
+      if (updatedEmployee) {
         setUserData((prev) => ({
           ...prev,
           employees: prev.employees.map((e) =>
-            e.email === email ? employee : e,
+            e.email === employeeEmail ? updatedEmployee : e,
           ),
         }));
       }
-    });
+    };
+
+    const onTaskStatusChanged = ({ email, employee }) => {
+      if (employee) {
+        setUserData((prev) => ({
+          ...prev,
+          employees: prev.employees.map((e) => (e.email === email ? employee : e)),
+        }));
+      }
+    };
+
+    if (socket) {
+      socket.on("employeeUpdated", onEmployeeUpdated);
+      socket.on("taskCreated", onTaskCreated);
+      socket.on("taskExplanationGenerated", onTaskExplanationGenerated);
+      socket.on("taskStatusChanged", onTaskStatusChanged);
+    }
 
     return () => {
-      socket.disconnect();
+      if (socket) {
+        socket.off("employeeUpdated", onEmployeeUpdated);
+        socket.off("taskCreated", onTaskCreated);
+        socket.off("taskExplanationGenerated", onTaskExplanationGenerated);
+        socket.off("taskStatusChanged", onTaskStatusChanged);
+      }
     };
   }, []);
 

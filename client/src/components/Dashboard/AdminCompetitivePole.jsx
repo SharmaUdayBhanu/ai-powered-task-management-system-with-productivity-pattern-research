@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from "react";
 import axios from "axios";
-import { io } from "socket.io-client";
 import {
   BarChart,
   Bar,
@@ -11,11 +10,8 @@ import {
   ResponsiveContainer,
   Legend,
 } from "recharts";
-import {
-  ENABLE_REALTIME,
-  REALTIME_SOCKET_OPTIONS,
-  REALTIME_SOCKET_URL,
-} from "../../lib/realtime";
+import getSocket from "../../lib/socket";
+import { ENABLE_REALTIME } from "../../lib/realtime";
 
 const API_URL = `${import.meta.env.VITE_API_URL || ""}/api`;
 
@@ -42,15 +38,20 @@ const AdminCompetitivePole = ({ employees, theme = "dark" }) => {
       return undefined;
     }
 
-    const socket = io(REALTIME_SOCKET_URL, REALTIME_SOCKET_OPTIONS);
-    socket.on("taskStatusChanged", () => {
-      fetchRankings();
-    });
-    socket.on("taskActionCompleted", () => {
-      fetchRankings();
-    });
+    const socket = getSocket();
+    const onTaskStatusChanged = () => fetchRankings();
+    const onTaskActionCompleted = () => fetchRankings();
+    if (socket) {
+      socket.on("taskStatusChanged", onTaskStatusChanged);
+      socket.on("taskActionCompleted", onTaskActionCompleted);
+    }
 
-    return () => socket.disconnect();
+    return () => {
+      if (socket) {
+        socket.off("taskStatusChanged", onTaskStatusChanged);
+        socket.off("taskActionCompleted", onTaskActionCompleted);
+      }
+    };
   }, [employees]);
 
   if (loading) {

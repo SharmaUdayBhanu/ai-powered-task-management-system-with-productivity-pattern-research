@@ -1,13 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MessageCircle, X, Send, Lock, CheckCircle2 } from "lucide-react";
 import axios from "axios";
-import { io } from "socket.io-client";
 import API_URL from "../../lib/apiClient";
-import {
-  ENABLE_REALTIME,
-  REALTIME_SOCKET_OPTIONS,
-  REALTIME_SOCKET_URL,
-} from "../../lib/realtime";
+import { ENABLE_REALTIME } from "../../lib/realtime";
+import getSocket from "../../lib/socket";
 
 const buildTaskKey = ({ groupId, taskId }) =>
   groupId ? `group:${groupId}` : `task:${taskId}`;
@@ -264,7 +260,6 @@ const TaskChatDock = ({
   useEffect(() => {
     if (!isOpen || !selectedTask) return undefined;
     const intervalId = window.setInterval(() => {
-      setMessages((prev) => prev);
       fetchChatMessages();
     }, 12_000);
 
@@ -300,10 +295,9 @@ const TaskChatDock = ({
 
   useEffect(() => {
     if (!ENABLE_REALTIME) return undefined;
+    const socket = getSocket();
 
-    const socket = io(REALTIME_SOCKET_URL, REALTIME_SOCKET_OPTIONS);
-
-    socket.on("taskChatMessage", (payload) => {
+    const onTaskChatMessage = (payload) => {
       const message = payload?.message;
       if (!message) return;
       if (isSubtaskNotice(message)) return;
@@ -316,8 +310,7 @@ const TaskChatDock = ({
         if (!selectedTask || selectedTask.key !== key) return prev;
         const allowed = filterMessagesForTask([message], selectedTask);
         if (allowed.length === 0) return prev;
-        if (prev.some((item) => item.messageId === message.messageId))
-          return prev;
+        if (prev.some((item) => item.messageId === message.messageId)) return prev;
         const withoutOptimistic = prev.filter((item) => {
           if (!item.messageId || !String(item.messageId).startsWith("local-")) {
             return true;
@@ -348,9 +341,13 @@ const TaskChatDock = ({
           );
         }, 3600);
       }
-    });
+    };
 
-    return () => socket.disconnect();
+    if (socket) socket.on("taskChatMessage", onTaskChatMessage);
+
+    return () => {
+      if (socket) socket.off("taskChatMessage", onTaskChatMessage);
+    };
   }, [selectedTask, isOpen, filterMessagesForTask, isSubtaskNotice]);
 
   const handleSend = async () => {

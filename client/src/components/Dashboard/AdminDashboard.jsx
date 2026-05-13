@@ -6,7 +6,7 @@ import React, {
   useState,
 } from "react";
 import axios from "axios";
-import { io } from "socket.io-client";
+import getSocket from "../../lib/socket";
 import Header from "../other/Header";
 import CreateTask from "../other/CreateTask";
 import EmployeeAutocomplete from "../EmployeeAutocomplete";
@@ -17,11 +17,7 @@ import {
   sanitizeApiError,
   default as API_URL,
 } from "../../lib/apiClient";
-import {
-  ENABLE_REALTIME,
-  REALTIME_SOCKET_OPTIONS,
-  REALTIME_SOCKET_URL,
-} from "../../lib/realtime";
+import { ENABLE_REALTIME } from "../../lib/realtime";
 import ActionableInsightList from "../ActionableInsightList";
 import DataSourceBadge from "../DataSourceBadge";
 
@@ -319,9 +315,13 @@ const AdminDashboard = () => {
   );
 
   const fetchDashboardData = useCallback(async ({ includeAI = false } = {}) => {
+    const rankingParams = new URLSearchParams({
+      includeAI: String(includeAI),
+      ...(includeAI && { force: "true" }),
+    }).toString();
     const [employeeRes, rankingRes] = await Promise.allSettled([
       getWithRetry("/employees", { fallbackValue: { data: [] } }),
-      getWithRetry(`/productivity/rankings?includeAI=${includeAI}`, {
+      getWithRetry(`/productivity/rankings?${rankingParams}`, {
         fallbackValue: {
           data: {
             leaderboard: [],
@@ -438,42 +438,45 @@ const AdminDashboard = () => {
       return undefined;
     }
 
-    const socket = io(REALTIME_SOCKET_URL, REALTIME_SOCKET_OPTIONS);
+    const socket = getSocket();
 
-    socket.on("employeeUpdated", ({ email, employee }) => {
+    const onEmployeeUpdated = ({ email, employee }) => {
       if (!employee) return;
-      setEmployees((prev) => {
-        const next = prev.map((row) => (row.email === email ? employee : row));
-        return next;
-      });
-    });
+      setEmployees((prev) => prev.map((row) => (row.email === email ? employee : row)));
+    };
 
-    socket.on("taskCreated", ({ email, task }) => {
+    const onTaskCreated = ({ email, task }) => {
       if (!email || !task) return;
       setEmployees((prev) =>
-        prev.map((row) =>
-          row.email === email
-            ? { ...row, tasks: [...(row.tasks || []), task] }
-            : row,
-        ),
+        prev.map((row) => (row.email === email ? { ...row, tasks: [...(row.tasks || []), task] } : row)),
       );
-    });
+    };
 
-    socket.on("taskStatusChanged", ({ email, employee }) => {
+    const onTaskStatusChanged = ({ email, employee }) => {
       if (!employee || !email) return;
-      setEmployees((prev) =>
-        prev.map((row) => (row.email === email ? employee : row)),
-      );
-    });
+      setEmployees((prev) => prev.map((row) => (row.email === email ? employee : row)));
+    };
 
-    socket.on("taskActionCompleted", ({ email, employee }) => {
+    const onTaskActionCompleted = ({ email, employee }) => {
       if (!employee || !email) return;
-      setEmployees((prev) =>
-        prev.map((row) => (row.email === email ? employee : row)),
-      );
-    });
+      setEmployees((prev) => prev.map((row) => (row.email === email ? employee : row)));
+    };
 
-    return () => socket.disconnect();
+    if (socket) {
+      socket.on("employeeUpdated", onEmployeeUpdated);
+      socket.on("taskCreated", onTaskCreated);
+      socket.on("taskStatusChanged", onTaskStatusChanged);
+      socket.on("taskActionCompleted", onTaskActionCompleted);
+    }
+
+    return () => {
+      if (socket) {
+        socket.off("employeeUpdated", onEmployeeUpdated);
+        socket.off("taskCreated", onTaskCreated);
+        socket.off("taskStatusChanged", onTaskStatusChanged);
+        socket.off("taskActionCompleted", onTaskActionCompleted);
+      }
+    };
   }, []);
 
   useEffect(() => {

@@ -1,5 +1,4 @@
 import React, { useEffect, useState } from "react";
-import { io } from "socket.io-client";
 import {
   XAxis,
   YAxis,
@@ -12,11 +11,8 @@ import {
   Line,
 } from "recharts";
 import { getWithRetry, sanitizeApiError } from "../lib/apiClient";
-import {
-  ENABLE_REALTIME,
-  REALTIME_SOCKET_OPTIONS,
-  REALTIME_SOCKET_URL,
-} from "../lib/realtime";
+import getSocket from "../lib/socket";
+import { ENABLE_REALTIME } from "../lib/realtime";
 import ActionableInsightList from "./ActionableInsightList";
 import DataSourceBadge from "./DataSourceBadge";
 
@@ -137,7 +133,7 @@ const ProductivityDashboard = ({ employee, theme = "dark" }) => {
       return undefined;
     }
 
-    const socket = io(REALTIME_SOCKET_URL, REALTIME_SOCKET_OPTIONS);
+    const socket = getSocket();
 
     const refreshData = async () => {
       try {
@@ -150,15 +146,15 @@ const ProductivityDashboard = ({ employee, theme = "dark" }) => {
       }
     };
 
-    socket.on("employeeUpdated", ({ email }) => {
+    const onEmployeeUpdated = ({ email }) => {
       if (employee.email === email) refreshData();
-    });
+    };
 
-    socket.on("taskCreated", ({ email }) => {
+    const onTaskCreated = ({ email }) => {
       if (employee.email === email) refreshData();
-    });
+    };
 
-    socket.on("taskStatusChanged", ({ email }) => {
+    const onTaskStatusChanged = ({ email }) => {
       if (employee.email !== email) return;
       fetchProductivityData(employee._id, {
         forceInsights: true,
@@ -167,66 +163,77 @@ const ProductivityDashboard = ({ employee, theme = "dark" }) => {
       }).catch(() => {
         refreshData();
       });
-    });
+    };
 
-    socket.on(
-      "taskActionCompleted",
-      ({
-        email,
-        employeeId,
-        action,
-        taskTitle,
-        taskDescription,
-        taskStatus,
-      }) => {
-        if (employee.email !== email) return;
+    const onTaskActionCompleted = ({
+      email,
+      employeeId,
+      action,
+      taskTitle,
+      taskDescription,
+      taskStatus,
+    }) => {
+      if (employee.email !== email) return;
 
-        const refreshInsights = async () => {
-          try {
-            const params = new URLSearchParams({
-              force: "true",
-              action,
-              taskTitle: taskTitle || "",
-              taskDescription: taskDescription || "",
-              taskStatus,
-            });
-            const [insightsRes, statsResult, chartResult] =
-              await Promise.allSettled([
-                getWithRetry(
-                  `/productivity/${employeeId}/insights?${params.toString()}`,
-                  { maxRetries: 2 },
-                ),
-                getWithRetry(`/productivity/${employeeId}/stats`, {
-                  maxRetries: 2,
-                }),
-                getWithRetry(`/productivity/${employeeId}/chart-data`, {
-                  maxRetries: 2,
-                }),
-              ]);
-            if (insightsRes.status === "fulfilled") {
-              setInsights(insightsRes.value.data?.insights || []);
-              setAnalysis(insightsRes.value.data?.analysis || null);
-              if (insightsRes.value.data?.insightEngine) {
-                setInsightEngine(insightsRes.value.data.insightEngine);
-              }
+      const refreshInsights = async () => {
+        try {
+          const params = new URLSearchParams({
+            force: "true",
+            action,
+            taskTitle: taskTitle || "",
+            taskDescription: taskDescription || "",
+            taskStatus,
+          });
+          const [insightsRes, statsResult, chartResult] =
+            await Promise.allSettled([
+              getWithRetry(
+                `/productivity/${employeeId}/insights?${params.toString()}`,
+                { maxRetries: 2 },
+              ),
+              getWithRetry(`/productivity/${employeeId}/stats`, {
+                maxRetries: 2,
+              }),
+              getWithRetry(`/productivity/${employeeId}/chart-data`, {
+                maxRetries: 2,
+              }),
+            ]);
+          if (insightsRes.status === "fulfilled") {
+            setInsights(insightsRes.value.data?.insights || []);
+            setAnalysis(insightsRes.value.data?.analysis || null);
+            if (insightsRes.value.data?.insightEngine) {
+              setInsightEngine(insightsRes.value.data.insightEngine);
             }
-            if (statsResult.status === "fulfilled") {
-              setStats(statsResult.value.data);
-            }
-            if (chartResult.status === "fulfilled") {
-              setChartData(chartResult.value.data);
-            }
-          } catch (err) {
-            console.warn("Failed to refresh insights:", err);
-            refreshData();
           }
-        };
+          if (statsResult.status === "fulfilled") {
+            setStats(statsResult.value.data);
+          }
+          if (chartResult.status === "fulfilled") {
+            setChartData(chartResult.value.data);
+          }
+        } catch (err) {
+          console.warn("Failed to refresh insights:", err);
+          refreshData();
+        }
+      };
 
-        refreshInsights();
-      },
-    );
+      refreshInsights();
+    };
 
-    return () => socket.disconnect();
+    if (socket) {
+      socket.on("employeeUpdated", onEmployeeUpdated);
+      socket.on("taskCreated", onTaskCreated);
+      socket.on("taskStatusChanged", onTaskStatusChanged);
+      socket.on("taskActionCompleted", onTaskActionCompleted);
+    }
+
+    return () => {
+      if (socket) {
+        socket.off("employeeUpdated", onEmployeeUpdated);
+        socket.off("taskCreated", onTaskCreated);
+        socket.off("taskStatusChanged", onTaskStatusChanged);
+        socket.off("taskActionCompleted", onTaskActionCompleted);
+      }
+    };
   }, [employee?._id, employee?.email]);
 
   if (!employee) return null;

@@ -4,14 +4,10 @@ import TaskListNumbers from "../other/TaskListNumbers";
 import TaskList from "../TaskList/TaskList";
 import ProductivityDashboard from "../ProductivityDashboard";
 import TaskChatDock from "../TaskChat/TaskChatDock";
-import { io } from "socket.io-client";
+import getSocket from "../../lib/socket";
 import { Moon, Sun, TrendingDown, TrendingUp } from "lucide-react";
 import { getWithRetry, sanitizeApiError } from "../../lib/apiClient";
-import {
-  ENABLE_REALTIME,
-  REALTIME_SOCKET_OPTIONS,
-  REALTIME_SOCKET_URL,
-} from "../../lib/realtime";
+import { ENABLE_REALTIME } from "../../lib/realtime";
 
 const getPriorityWeight = (priority) => {
   if (priority === "High") return 3;
@@ -129,15 +125,15 @@ const EmployeeDashboard = ({ data }) => {
       return undefined;
     }
 
-    const socket = io(REALTIME_SOCKET_URL, REALTIME_SOCKET_OPTIONS);
+    const socket = getSocket();
 
-    socket.on("employeeUpdated", ({ email, employee }) => {
+    const onEmployeeUpdated = ({ email, employee }) => {
       if (email === data.email) {
         setEmployee(withDedupedTasks(employee));
       }
-    });
+    };
 
-    socket.on("taskCreated", ({ email, task }) => {
+    const onTaskCreated = ({ email, task }) => {
       if (
         String(email || "").toLowerCase() !==
           String(data.email || "").toLowerCase() ||
@@ -172,18 +168,27 @@ const EmployeeDashboard = ({ data }) => {
         const tasks = dedupeEmployeeTasks(tasksRaw);
         return { ...prev, tasks, taskCounts: computeTaskCounts(tasks) };
       });
-    });
+    };
 
-    socket.on(
-      "taskExplanationGenerated",
-      ({ employeeEmail, updatedEmployee }) => {
-        if (employeeEmail === data.email && updatedEmployee) {
-          setEmployee(withDedupedTasks(updatedEmployee));
-        }
-      },
-    );
+    const onTaskExplanationGenerated = ({ employeeEmail, updatedEmployee }) => {
+      if (employeeEmail === data.email && updatedEmployee) {
+        setEmployee(withDedupedTasks(updatedEmployee));
+      }
+    };
 
-    return () => socket.disconnect();
+    if (socket) {
+      socket.on("employeeUpdated", onEmployeeUpdated);
+      socket.on("taskCreated", onTaskCreated);
+      socket.on("taskExplanationGenerated", onTaskExplanationGenerated);
+    }
+
+    return () => {
+      if (socket) {
+        socket.off("employeeUpdated", onEmployeeUpdated);
+        socket.off("taskCreated", onTaskCreated);
+        socket.off("taskExplanationGenerated", onTaskExplanationGenerated);
+      }
+    };
   }, [data.email]);
 
   const handleAccept = (payload) => {
