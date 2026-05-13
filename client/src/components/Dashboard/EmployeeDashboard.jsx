@@ -43,10 +43,18 @@ const getWeekBounds = () => {
 };
 
 const computeTaskCounts = (tasks = []) => ({
-  newTask: tasks.filter((task) => task.newTask && !task.isDeleted && !task.notAccepted).length,
-  active: tasks.filter((task) => task.active && !task.isDeleted && !task.notAccepted).length,
-  completed: tasks.filter((task) => task.completed && !task.isDeleted && !task.notAccepted).length,
-  failed: tasks.filter((task) => task.failed && !task.isDeleted && !task.notAccepted).length,
+  newTask: tasks.filter(
+    (task) => task.newTask && !task.isDeleted && !task.notAccepted,
+  ).length,
+  active: tasks.filter(
+    (task) => task.active && !task.isDeleted && !task.notAccepted,
+  ).length,
+  completed: tasks.filter(
+    (task) => task.completed && !task.isDeleted && !task.notAccepted,
+  ).length,
+  failed: tasks.filter(
+    (task) => task.failed && !task.isDeleted && !task.notAccepted,
+  ).length,
 });
 
 const dedupeEmployeeTasks = (tasks = []) => {
@@ -198,7 +206,6 @@ const EmployeeDashboard = ({ data }) => {
       });
       return;
     }
-    setRefreshKey((prev) => prev + 1);
   };
   const handleModalStateChange = (isOpen) => {
     modalOpenRef.current = Boolean(isOpen);

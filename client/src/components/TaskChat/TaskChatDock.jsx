@@ -265,6 +265,7 @@ const TaskChatDock = ({
   useEffect(() => {
     if (!isOpen || !selectedTask) return undefined;
     const intervalId = window.setInterval(() => {
+      setMessages((prev) => prev);
       fetchChatMessages();
     }, 12_000);
 
@@ -273,16 +274,18 @@ const TaskChatDock = ({
 
   const scrollToBottom = (behavior = "smooth") => {
     if (!scrollRef.current) return;
-    scrollRef.current.scrollTo({
-      top: scrollRef.current.scrollHeight,
-      behavior,
-    });
+    const maxScrollTop = scrollRef.current.scrollHeight - scrollRef.current.clientHeight;
+    if (maxScrollTop > 0) {
+      scrollRef.current.scrollTop = maxScrollTop;
+    }
   };
 
   useEffect(() => {
     if (!isOpen) return;
     if (atBottomRef.current) {
-      scrollToBottom("smooth");
+      requestAnimationFrame(() => {
+        scrollToBottom("auto");
+      });
     }
   }, [messages, isOpen]);
 
@@ -322,6 +325,7 @@ const TaskChatDock = ({
           return item.__signature !== signature;
         });
         optimisticRef.current.delete(signature);
+        atBottomRef.current = true;
         return [...withoutOptimistic, message];
       });
 
@@ -409,6 +413,7 @@ const TaskChatDock = ({
       setMessages((prev) =>
         prev.filter((item) => item.messageId !== optimisticMessage.messageId),
       );
+      atBottomRef.current = false;
     } finally {
       setSending(false);
     }
@@ -687,7 +692,7 @@ const TaskChatDock = ({
               const target = event.currentTarget;
               const distance =
                 target.scrollHeight - target.scrollTop - target.clientHeight;
-              atBottomRef.current = distance < 24;
+              atBottomRef.current = distance < 16;
             }}
           >
             {loading && (
