@@ -310,7 +310,8 @@ const TaskChatDock = ({
         if (!selectedTask || selectedTask.key !== key) return prev;
         const allowed = filterMessagesForTask([message], selectedTask);
         if (allowed.length === 0) return prev;
-        if (prev.some((item) => item.messageId === message.messageId)) return prev;
+        if (prev.some((item) => item.messageId === message.messageId))
+          return prev;
         const withoutOptimistic = prev.filter((item) => {
           if (!item.messageId || !String(item.messageId).startsWith("local-")) {
             return true;

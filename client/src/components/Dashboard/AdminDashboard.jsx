@@ -442,24 +442,34 @@ const AdminDashboard = () => {
 
     const onEmployeeUpdated = ({ email, employee }) => {
       if (!employee) return;
-      setEmployees((prev) => prev.map((row) => (row.email === email ? employee : row)));
+      setEmployees((prev) =>
+        prev.map((row) => (row.email === email ? employee : row)),
+      );
     };
 
     const onTaskCreated = ({ email, task }) => {
       if (!email || !task) return;
       setEmployees((prev) =>
-        prev.map((row) => (row.email === email ? { ...row, tasks: [...(row.tasks || []), task] } : row)),
+        prev.map((row) =>
+          row.email === email
+            ? { ...row, tasks: [...(row.tasks || []), task] }
+            : row,
+        ),
       );
     };
 
     const onTaskStatusChanged = ({ email, employee }) => {
       if (!employee || !email) return;
-      setEmployees((prev) => prev.map((row) => (row.email === email ? employee : row)));
+      setEmployees((prev) =>
+        prev.map((row) => (row.email === email ? employee : row)),
+      );
     };
 
     const onTaskActionCompleted = ({ email, employee }) => {
       if (!employee || !email) return;
-      setEmployees((prev) => prev.map((row) => (row.email === email ? employee : row)));
+      setEmployees((prev) =>
+        prev.map((row) => (row.email === email ? employee : row)),
+      );
     };
 
     if (socket) {
@@ -949,8 +959,7 @@ const AdminDashboard = () => {
             );
             if (empEmail === memberEmail && wasFailed) {
               const row = updated.groupMemberEstimates.find(
-                (e) =>
-                  String(e?.email || "").toLowerCase() === memberEmail,
+                (e) => String(e?.email || "").toLowerCase() === memberEmail,
               );
               const mins = Number(row?.estimatedMinutes);
               if (Number.isFinite(mins) && mins > 0) {
@@ -1323,7 +1332,10 @@ const AdminDashboard = () => {
   const adminQuickPills = useMemo(() => {
     const ai = leaderboardData.aiInsights;
     if (!ai) return [];
-    if (Array.isArray(ai.recommendationPills) && ai.recommendationPills.length) {
+    if (
+      Array.isArray(ai.recommendationPills) &&
+      ai.recommendationPills.length
+    ) {
       return ai.recommendationPills;
     }
     return Array.isArray(ai.recommendations) ? ai.recommendations : [];
@@ -1332,7 +1344,10 @@ const AdminDashboard = () => {
   const adminTeamPills = useMemo(() => {
     const ai = leaderboardData.aiInsights;
     if (!ai) return [];
-    if (Array.isArray(ai.teamDiagnosticPills) && ai.teamDiagnosticPills.length) {
+    if (
+      Array.isArray(ai.teamDiagnosticPills) &&
+      ai.teamDiagnosticPills.length
+    ) {
       return ai.teamDiagnosticPills;
     }
     if (Array.isArray(ai.teamDiagnostics) && ai.teamDiagnostics.length) {

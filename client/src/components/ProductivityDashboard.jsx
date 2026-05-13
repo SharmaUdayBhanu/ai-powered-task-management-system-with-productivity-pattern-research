@@ -27,11 +27,7 @@ const ProductivityDashboard = ({ employee, theme = "dark" }) => {
 
   const fetchProductivityData = async (
     employeeId,
-    {
-      forceInsights = false,
-      includeInsights = true,
-      silent = false,
-    } = {},
+    { forceInsights = false, includeInsights = true, silent = false } = {},
   ) => {
     const insightsPath = forceInsights
       ? `/productivity/${employeeId}/insights?force=true`
@@ -46,10 +42,7 @@ const ProductivityDashboard = ({ employee, theme = "dark" }) => {
 
     const results = await Promise.allSettled(
       includeInsights
-        ? [
-            ...coreRequests,
-            getWithRetry(insightsPath, { maxRetries: 2 }),
-          ]
+        ? [...coreRequests, getWithRetry(insightsPath, { maxRetries: 2 })]
         : coreRequests,
     );
 
@@ -524,7 +517,10 @@ const ProductivityDashboard = ({ employee, theme = "dark" }) => {
                 <p className="mt-1 text-xs leading-relaxed opacity-90">
                   {analysis?.pattern ||
                     "Execution pattern will appear as more completed history is observed."}
-                  <DataSourceBadge source={narrativeSource} className="inline" />
+                  <DataSourceBadge
+                    source={narrativeSource}
+                    className="inline"
+                  />
                 </p>
               </div>
 
@@ -541,7 +537,10 @@ const ProductivityDashboard = ({ employee, theme = "dark" }) => {
                 <p className="mt-1 text-xs leading-relaxed opacity-90">
                   {analysis?.specialization ||
                     "Specialization signal will appear once category-performance patterns become clearer."}
-                  <DataSourceBadge source={narrativeSource} className="inline" />
+                  <DataSourceBadge
+                    source={narrativeSource}
+                    className="inline"
+                  />
                 </p>
               </div>
 
@@ -563,7 +562,10 @@ const ProductivityDashboard = ({ employee, theme = "dark" }) => {
                   :{" "}
                   {analysis?.changeDetection?.reason ||
                     "No major week-over-week shift detected."}
-                  <DataSourceBadge source={narrativeSource} className="inline" />
+                  <DataSourceBadge
+                    source={narrativeSource}
+                    className="inline"
+                  />
                 </p>
               </div>
 

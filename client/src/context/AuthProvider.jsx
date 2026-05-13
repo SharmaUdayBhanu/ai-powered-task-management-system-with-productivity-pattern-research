@@ -43,7 +43,9 @@ const AuthProvider = ({ children }) => {
     const onEmployeeUpdated = ({ email, employee }) => {
       setUserData((prev) => ({
         ...prev,
-        employees: prev.employees.map((e) => (e.email === email ? employee : e)),
+        employees: prev.employees.map((e) =>
+          e.email === email ? employee : e,
+        ),
       }));
     };
 
@@ -71,7 +73,9 @@ const AuthProvider = ({ children }) => {
       if (employee) {
         setUserData((prev) => ({
           ...prev,
-          employees: prev.employees.map((e) => (e.email === email ? employee : e)),
+          employees: prev.employees.map((e) =>
+            e.email === email ? employee : e,
+          ),
         }));
       }
     };
