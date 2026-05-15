@@ -115,6 +115,7 @@ const TaskChatDock = ({
   const atBottomRef = useRef(true);
   const optimisticRef = useRef(new Map());
   const privateAssistantByTaskRef = useRef(new Map());
+  const assistantRequestCountRef = useRef(0);
 
   const chatTasks = useMemo(
     () => normalizeTasks({ tasks, isAdmin, userEmail: user.email }),
@@ -208,18 +209,27 @@ const TaskChatDock = ({
     const existing = new Set(
       baseMessages.map((message) => String(message.messageId || "")),
     );
+    const existingSignatures = new Set(
+      baseMessages.map(
+        (message) => `${normalizeEmail(message.senderEmail)}|${message.message}`,
+      ),
+    );
     const merged = [...baseMessages];
     privateMessages.forEach((message) => {
-      if (!existing.has(String(message.messageId || ""))) {
+      const signature = `${normalizeEmail(message.senderEmail)}|${message.message}`;
+      if (
+        !existing.has(String(message.messageId || "")) &&
+        !existingSignatures.has(signature)
+      ) {
         merged.push(message);
       }
     });
     return merged;
   }, []);
 
-  const fetchChatMessages = useCallback(async () => {
+  const fetchChatMessages = useCallback(async ({ silent = false } = {}) => {
     if (!selectedTask) return;
-    setLoading(true);
+    if (!silent) setLoading(true);
     setError("");
 
     try {
@@ -249,7 +259,7 @@ const TaskChatDock = ({
     } catch (err) {
       setError("Unable to load chat messages.");
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [selectedTask, mergePrivateAssistant, filterMessagesForTask]);
 
@@ -260,19 +270,18 @@ const TaskChatDock = ({
   useEffect(() => {
     if (!isOpen || !selectedTask) return undefined;
     const intervalId = window.setInterval(() => {
-      fetchChatMessages();
-    }, 12_000);
+      fetchChatMessages({ silent: true });
+    }, ENABLE_REALTIME ? 30_000 : 8_000);
 
     return () => window.clearInterval(intervalId);
   }, [fetchChatMessages, isOpen, selectedTask]);
 
   const scrollToBottom = (behavior = "smooth") => {
     if (!scrollRef.current) return;
-    const maxScrollTop =
-      scrollRef.current.scrollHeight - scrollRef.current.clientHeight;
-    if (maxScrollTop > 0) {
-      scrollRef.current.scrollTop = maxScrollTop;
-    }
+    scrollRef.current.scrollTo({
+      top: scrollRef.current.scrollHeight,
+      behavior,
+    });
   };
 
   useEffect(() => {
@@ -323,8 +332,12 @@ const TaskChatDock = ({
         return [...withoutOptimistic, message];
       });
 
+      const messageTask =
+        chatTasks.find((task) => task.key === key) ||
+        (selectedTask?.key === key ? selectedTask : null);
+
       if (!selectedTask || selectedTask.key !== key || !isOpen) {
-        if (filterMessagesForTask([message], selectedTask).length === 0) return;
+        if (!messageTask || filterMessagesForTask([message], messageTask).length === 0) return;
         setUnreadByTask((prev) => ({
           ...prev,
           [key]: (prev[key] || 0) + 1,
@@ -349,7 +362,7 @@ const TaskChatDock = ({
     return () => {
       if (socket) socket.off("taskChatMessage", onTaskChatMessage);
     };
-  }, [selectedTask, isOpen, filterMessagesForTask, isSubtaskNotice]);
+  }, [chatTasks, selectedTask, isOpen, filterMessagesForTask, isSubtaskNotice]);
 
   const handleSend = async () => {
     const trimmed = messageText.trim();
@@ -359,8 +372,9 @@ const TaskChatDock = ({
     setAssistantError("");
     const isSingleTask = !selectedTask.groupId;
     const savyMatch = trimmed.match(/@savy\b/i);
-    const savyQuestion =
-      !isAdmin && savyMatch ? trimmed.replace(savyMatch[0], "").trim() : "";
+    const savyQuestion = savyMatch
+      ? trimmed.replace(savyMatch[0], "").trim()
+      : "";
     const signature = `${normalizeEmail(user.email)}|${trimmed}`;
     const optimisticMessage = {
       messageId: `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -374,8 +388,17 @@ const TaskChatDock = ({
     };
     optimisticRef.current.set(signature, optimisticMessage.messageId);
     setMessages((prev) => [...prev, optimisticMessage]);
+    setMessageText("");
     atBottomRef.current = true;
     scrollToBottom("smooth");
+    if (savyQuestion) {
+      void handleAssistantRequest({
+        question: savyQuestion,
+        taskKey: selectedTask.key,
+        contextTask: selectedTaskDetails || {},
+        conversationMessages: [...messages, optimisticMessage],
+      });
+    }
 
     try {
       const payload = {
@@ -401,27 +424,26 @@ const TaskChatDock = ({
         );
       }
 
-      setMessageText("");
-      if (savyQuestion) {
-        void handleAssistantRequest({
-          question: savyQuestion,
-          taskKey: selectedTask.key,
-          contextTask: selectedTaskDetails || {},
-        });
-      }
     } catch (err) {
       setError("Unable to send message. Please retry.");
       setMessages((prev) =>
         prev.filter((item) => item.messageId !== optimisticMessage.messageId),
       );
+      setMessageText(trimmed);
       atBottomRef.current = false;
     } finally {
       setSending(false);
     }
   };
 
-  const handleAssistantRequest = async ({ question, taskKey, contextTask }) => {
-    if (!selectedTask || !question || assistantLoading || !canChat) return;
+  const handleAssistantRequest = async ({
+    question,
+    taskKey,
+    contextTask,
+    conversationMessages = messages,
+  }) => {
+    if (!selectedTask || !question || !canChat) return;
+    assistantRequestCountRef.current += 1;
     setAssistantLoading(true);
     setAssistantError("");
 
@@ -460,6 +482,8 @@ const TaskChatDock = ({
           rules: [
             "Do not mention other employees, tasks, or admin decisions.",
             "Only answer about the current task for the requesting user.",
+            "Act as an independent helper, not a team member.",
+            "Do not use collective language like 'we' or 'our'.",
           ],
         },
         task: {
@@ -481,7 +505,7 @@ const TaskChatDock = ({
             ? contextTask.groupMembers
             : fallbackMembers,
         },
-        conversationHistory: messages.map((msg) => ({
+        conversationHistory: conversationMessages.map((msg) => ({
           role: msg.type === "assistant" ? "assistant" : "user",
           name: msg.senderName || msg.senderEmail,
           message: msg.message,
@@ -519,32 +543,46 @@ const TaskChatDock = ({
         type: "assistant",
       };
 
-      const isGroup = Boolean(contextTask.groupId);
-      if (isGroup) {
-        await axios.post(
-          `${API_URL}/group-tasks/${contextTask.groupId}/chat/messages`,
-          payload,
-        );
-      } else if (contextTask._id && (contextTask.ownerEmail || user?.email)) {
-        await axios.post(
-          `${API_URL}/employees/${contextTask.ownerEmail || user.email}/tasks/${contextTask._id}/chat/messages`,
-          payload,
-        );
-      }
-
       if (selectedTask && selectedTask.key === taskKey) {
         setMessages((prev) => {
           if (prev.some((item) => item.__signature === signature)) return prev;
           return [...prev, assistantMessage];
         });
+        privateAssistantByTaskRef.current.set(taskKey, [
+          ...(privateAssistantByTaskRef.current.get(taskKey) || []),
+          assistantMessage,
+        ]);
         optimisticRef.current.set(signature, assistantMessage.messageId);
         atBottomRef.current = true;
         scrollToBottom("smooth");
       }
+
+      try {
+        const isGroup = Boolean(contextTask.groupId);
+        if (isGroup) {
+          await axios.post(
+            `${API_URL}/group-tasks/${contextTask.groupId}/chat/messages`,
+            payload,
+          );
+        } else if (contextTask._id && (contextTask.ownerEmail || user?.email)) {
+          await axios.post(
+            `${API_URL}/employees/${contextTask.ownerEmail || user.email}/tasks/${contextTask._id}/chat/messages`,
+            payload,
+          );
+        }
+      } catch (persistErr) {
+        console.warn("Unable to persist Savy response:", persistErr);
+      }
     } catch (err) {
       setAssistantError("Assistant is unavailable right now. Please retry.");
     } finally {
-      setAssistantLoading(false);
+      assistantRequestCountRef.current = Math.max(
+        0,
+        assistantRequestCountRef.current - 1,
+      );
+      if (assistantRequestCountRef.current === 0) {
+        setAssistantLoading(false);
+      }
     }
   };
 
@@ -687,7 +725,7 @@ const TaskChatDock = ({
           </div>
 
           <div
-            className="flex-1 min-h-0 overflow-y-auto px-4 py-3 overscroll-contain"
+            className="relative flex-1 min-h-0 overflow-y-auto px-4 py-3 overscroll-contain"
             ref={scrollRef}
             onScroll={(event) => {
               const target = event.currentTarget;
@@ -696,19 +734,7 @@ const TaskChatDock = ({
               atBottomRef.current = distance < 16;
             }}
           >
-            {loading && (
-              <div className="space-y-3">
-                {[1, 2, 3].map((item) => (
-                  <div
-                    key={item}
-                    className={`h-10 rounded-lg ${
-                      isDark ? "bg-white/10" : "bg-gray-100"
-                    }`}
-                  />
-                ))}
-              </div>
-            )}
-            {!loading && messages.length === 0 && (
+            {messages.length === 0 && !loading && (
               <p className={`text-xs ${panelMuted}`}>No messages yet.</p>
             )}
             <div className="space-y-3">
@@ -911,10 +937,10 @@ const TaskChatDock = ({
                   }
                 }}
                 rows={1}
-                disabled={!canChat || sending}
+                disabled={!canChat}
                 placeholder={
                   canChat
-                    ? "Write a message... Use @savy for AI help"
+                    ? "Write a message..."
                     : "Chat is closed or not enabled"
                 }
                 className={`flex-1 resize-none rounded-lg border px-3 py-2 text-xs leading-relaxed ${

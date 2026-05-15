@@ -68,7 +68,7 @@ const FailedTask = ({ data, onExplain, onDelete, theme = "dark" }) => {
       </div>
       <div className="flex flex-wrap items-center gap-2 mt-2 flex-shrink-0">
         <span className="text-xs font-semibold bg-black/10 text-white px-2 py-1 rounded">
-          AI Suggested Priority: {data.aiPriority || "Medium"}
+          Priority: {data.aiPriority || "Medium"}
         </span>
         <TaskRiskBadge task={data} />
         <GroupTaskBadge task={data} />
@@ -84,6 +84,7 @@ const FailedTask = ({ data, onExplain, onDelete, theme = "dark" }) => {
           summary={data.explainSummary}
           steps={data.explainSteps}
           estimatedTime={data.explainEstimatedTime}
+          source={data.explainSource}
           theme={theme}
         />
       </div>

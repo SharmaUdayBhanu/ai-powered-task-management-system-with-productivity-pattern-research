@@ -1187,10 +1187,19 @@ const generateAdminDataDrivenInsights = ({
   });
 
   const overloaded = allEmployees
-    .filter((emp) => emp.completedLast7 <= 1 && emp.totalFailed >= 2)
+    .filter(
+      (emp) =>
+        Number(emp.activeTasks || 0) + Number(emp.newTasks || 0) >= 7 ||
+        (emp.completedLast7 <= 1 && emp.totalFailed >= 2),
+    )
     .map((emp) => emp.name);
   const underutilized = allEmployees
-    .filter((emp) => emp.completedLast7 === 0 && emp.totalFailed === 0)
+    .filter(
+      (emp) =>
+        emp.completedLast7 === 0 &&
+        emp.totalFailed === 0 &&
+        Number(emp.activeTasks || 0) + Number(emp.newTasks || 0) <= 1,
+    )
     .map((emp) => `${emp.name} (low recent utilization)`);
   const failureClusterEmployees = allEmployees
     .filter((emp) => emp.totalFailed >= Math.max(2, emp.totalCompleted * 0.5))
@@ -1252,6 +1261,8 @@ const generateAdminDataDrivenInsights = ({
     const riskSignal =
       lowData
         ? "low confidence signal due to small sample size"
+        : Number(emp.activeTasks || 0) + Number(emp.newTasks || 0) >= 7
+        ? "workload queue is overloaded"
         : emp.totalFailed >= Math.max(2, emp.totalCompleted * 0.5)
         ? "failure density is elevated"
         : "no critical risk cluster";
@@ -1489,6 +1500,7 @@ function computeStats(employee) {
     (t) => t.completedAt && isValidDate(t.completedAt),
   );
   const activeTasks = tasks.filter((t) => t.active);
+  const newTasks = tasks.filter((t) => t.newTask);
   const failedTasks = tasks.filter((t) => t.failed);
 
   // On-time vs delayed (only for tasks where this can be derived)
@@ -1583,6 +1595,7 @@ function computeStats(employee) {
     productivityTrendDelta: trendDelta,
     completedTaskCount: completedTasks.length,
     activeTaskCount: activeTasks.length,
+    newTaskCount: newTasks.length,
     failedTaskCount: failedTasks.length,
     outcomeCompletionRate: Number(outcomeCompletionRate.toFixed(1)),
     trendLabel: trendMeta.label,
@@ -1647,6 +1660,8 @@ router.get("/rankings", async (req, res) => {
       productivityScore: entry.productivityScore,
       totalCompleted: entry.stats.completedTaskCount,
       totalFailed: entry.stats.failedTaskCount,
+      activeTasks: entry.stats.activeTaskCount,
+      newTasks: entry.stats.newTaskCount,
     }));
 
     const aiLeaderboardSnapshot = sorted.slice(0, 8).map((entry) => ({
@@ -1657,6 +1672,8 @@ router.get("/rankings", async (req, res) => {
       trendDelta: entry.stats.productivityTrendDelta,
       onTimePercent: entry.stats.onTimePercent,
       avgCompletion: entry.stats.averageCompletionTimeMinutes,
+      activeTasks: entry.stats.activeTaskCount,
+      newTasks: entry.stats.newTaskCount,
     }));
 
     const adminInsightsInput = {

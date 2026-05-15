@@ -110,9 +110,8 @@ const TaskDeadlineTimer = ({ task, employeeEmail, theme = "dark" }) => {
       : null;
 
   const effectiveWorkDeadlineMs = useMemo(() => {
-    if (durationDeadlineMs && calendarDeadlineMs) {
-      return Math.min(durationDeadlineMs, calendarDeadlineMs);
-    }
+    // For active tasks, admin extensions increase estimated duration.
+    // Use duration-based deadline first so timer reflects extension instantly.
     return durationDeadlineMs ?? calendarDeadlineMs;
   }, [durationDeadlineMs, calendarDeadlineMs]);
 

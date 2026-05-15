@@ -17,6 +17,8 @@ Metadata (may be partial):
 - estimatedDurationMinutes: ${metadata?.estimatedDuration ?? "n/a"}
 - complexity: ${metadata?.complexity ?? "n/a"}
 - currentActiveTasksForEmployee: ${metadata?.activeTasks ?? "n/a"}
+- currentNewTasksForEmployee: ${metadata?.newTasks ?? "n/a"}
+- deadline: ${metadata?.deadline || "n/a"}
 
 IMPORTANT: Understand CONTEXT and INTENT, not just keywords:
 - "revert me now its very imp" = HIGH priority (urgency + importance)
@@ -25,7 +27,7 @@ IMPORTANT: Understand CONTEXT and INTENT, not just keywords:
 - Tasks with deadlines or time-sensitive outcomes = HIGH
 - Complex tasks requiring immediate attention = HIGH
 - Simple, non-urgent tasks = MEDIUM or LOW
-- If employee has many active tasks, consider lowering priority to avoid overload
+- Balance urgency against workload: deadlines and blockers raise priority; heavy workload without near-term deadline may lower priority to protect flow
 - If estimatedDurationMinutes is missing from metadata, infer realistic effort and return estimated_duration_minutes
 - estimated_duration_minutes must be a single number in minutes (for ranges, return the midpoint)
 
@@ -175,6 +177,7 @@ export function buildRuleBasedTaskGuidance({ title, description, metadata }) {
     summary,
     steps,
     estimated_time: durationText,
+    source: "System",
     fromFallback: true,
   };
 }
@@ -227,7 +230,7 @@ You are an analytics assistant for an admin dashboard.
 Analyze ONLY the structured JSON input to identify performance patterns, trends, and issues.
 
 Rules:
-- Use only values present in the input (leaderboardSnapshot names, scores, on-time %, trend deltas, completion counts).
+- Use only values present in the input (leaderboardSnapshot names, scores, on-time %, trend deltas, completion counts, active/new task counts).
 - No invented numbers or employees.
 - recommendations must be manager actions; each must cite at least two leaderboard facts.
 - teamDiagnostics explain team state (cadence, workload, failures, momentum) and must not reuse recommendation wording.
@@ -235,7 +238,7 @@ Rules:
 
 Return ONLY valid JSON in this exact format:
 {
-  "summary": "2-3 concise sentences naming people when you cite performance",
+  "summary": "2-3 concise sentences naming people when you cite performance or workload",
   "topPerformer": "one sentence naming the leader and citing score + on-time or completion signal from input",
   "mostImproved": "one sentence naming the employee and citing trend delta / last-7-days completions from input",
   "needsAttention": "one sentence naming the employee who most needs support right now, citing score, failures, or last-7-days completions from input (must not duplicate mostImproved)",

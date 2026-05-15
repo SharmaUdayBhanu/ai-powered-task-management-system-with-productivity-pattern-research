@@ -78,6 +78,29 @@ const withDedupedTasks = (employee) => {
   };
 };
 
+const getTaskAliases = (task = {}, fallbackId = "") =>
+  [
+    task._id,
+    fallbackId,
+    `${task.taskTitle}-${task.taskDate}`,
+    `fb:${String(task.groupId || "")}:${task.taskTitle}:${task.taskDate}:${task.email || ""}`,
+  ]
+    .filter(Boolean)
+    .map(String);
+
+const patchEmployeeTask = (employee, payload = {}) => {
+  if (!employee || !payload?.updatedTask) return employee;
+  const updatedTask = payload.updatedTask;
+  const aliases = new Set(getTaskAliases(updatedTask, payload.taskId));
+  const tasksRaw = (employee.tasks || []).map((task) => {
+    const taskAliases = getTaskAliases(task);
+    const isMatch = taskAliases.some((alias) => aliases.has(alias));
+    return isMatch ? { ...task, ...updatedTask } : task;
+  });
+  const tasks = dedupeEmployeeTasks(tasksRaw);
+  return { ...employee, tasks, taskCounts: computeTaskCounts(tasks) };
+};
+
 const EmployeeDashboard = ({ data }) => {
   const [employee, setEmployee] = useState(data);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -191,23 +214,11 @@ const EmployeeDashboard = ({ data }) => {
     };
   }, [data.email]);
 
-  const handleAccept = (payload) => {
+  const handleTaskMutation = (payload) => {
     if (payload?.updatedTask) {
       setEmployee((prev) => {
-        if (!prev) return prev;
-        const updatedTask = payload.updatedTask;
-        const updatedTaskId = String(updatedTask._id || payload.taskId || "");
-        const tasksRaw = (prev.tasks || []).map((task) => {
-          const sameId =
-            updatedTaskId && String(task._id || "") === updatedTaskId;
-          const sameFallback =
-            task.taskTitle === updatedTask.taskTitle &&
-            task.taskDate === updatedTask.taskDate &&
-            task.taskDescription === updatedTask.taskDescription;
-          return sameId || sameFallback ? { ...task, ...updatedTask } : task;
-        });
-        const tasks = dedupeEmployeeTasks(tasksRaw);
-        return { ...prev, tasks, taskCounts: computeTaskCounts(tasks) };
+        const patched = patchEmployeeTask(prev, payload);
+        return patched || prev;
       });
       return;
     }
@@ -320,8 +331,8 @@ const EmployeeDashboard = ({ data }) => {
     <div
       className={
         theme === "dark"
-          ? "p-2 md:p-10 bg-[#1C1C1C] min-h-screen overflow-x-auto"
-          : "p-2 md:p-10 bg-white min-h-screen overflow-x-auto"
+          ? "dashboard-shell dashboard-shell-dark p-2 md:p-10 bg-[#1C1C1C] min-h-screen overflow-x-auto"
+          : "dashboard-shell dashboard-shell-light p-2 md:p-10 bg-white min-h-screen overflow-x-auto"
       }
     >
       <div className="flex justify-end mb-2">
@@ -330,8 +341,8 @@ const EmployeeDashboard = ({ data }) => {
           aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
           className={
             theme === "dark"
-              ? "group relative inline-flex h-11 w-28 items-center rounded-full border border-white/15 bg-[#111111] px-2 text-white transition-all duration-300 hover:border-cyan-300/60"
-              : "group relative inline-flex h-11 w-28 items-center rounded-full border border-gray-300 bg-gray-100 px-2 text-gray-900 transition-all duration-300 hover:border-amber-400"
+              ? "dashboard-action group relative inline-flex h-11 w-28 items-center rounded-full border border-white/15 bg-[#111111] px-2 text-white transition-all duration-300 hover:border-cyan-300/60"
+              : "dashboard-action group relative inline-flex h-11 w-28 items-center rounded-full border border-gray-300 bg-gray-100 px-2 text-gray-900 transition-all duration-300 hover:border-amber-400"
           }
           onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
         >
@@ -373,7 +384,7 @@ const EmployeeDashboard = ({ data }) => {
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-semibold">Today's Focus Tasks</h2>
               <span className="text-xs opacity-70">
-                Prioritized by urgency + AI priority
+                Prioritized by urgency + task priority
               </span>
             </div>
             <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
@@ -468,7 +479,8 @@ const EmployeeDashboard = ({ data }) => {
           </div>
           <TaskList
             data={employee}
-            onAccept={handleAccept}
+            onAccept={handleTaskMutation}
+            onTaskChange={handleTaskMutation}
             vertical
             theme={theme}
             onModalStateChange={handleModalStateChange}

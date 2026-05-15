@@ -4,6 +4,7 @@ import { postWithRetry } from "../../lib/apiClient";
 import TaskDeadlineTimer from "./TaskDeadlineTimer";
 import TaskRiskBadge from "./TaskRiskBadge";
 import GroupTaskBadge from "./GroupTaskBadge";
+import DataSourceBadge from "../DataSourceBadge";
 
 const API_URL = `${import.meta.env.VITE_API_URL || ""}/api`;
 
@@ -64,6 +65,7 @@ const readCachedInsight = (cacheKey) => {
         parsed.checkedMap && typeof parsed.checkedMap === "object"
           ? parsed.checkedMap
           : {},
+      source: parsed.source === "AI" ? "AI" : "System",
     };
   } catch {
     return null;
@@ -79,6 +81,7 @@ const writeCachedInsight = (cacheKey, payload) => {
         estimated_time: payload.estimated_time || "",
         steps: normalizeSteps(payload.steps),
         checkedMap: payload.checkedMap || {},
+        source: payload.source === "AI" ? "AI" : "System",
       }),
     );
   } catch {
@@ -134,6 +137,7 @@ const AcceptTask = ({
             estimated_time: String(data.explainEstimatedTime || "").trim(),
             steps: normalizeSteps(data.explainSteps),
             checkedMap: resolvedCheckedMap,
+            source: data.explainSource || "System",
           }
         : null;
 
@@ -155,74 +159,22 @@ const AcceptTask = ({
       return;
     }
 
+    const previousStatus = status;
+    setStatus(statusType);
     setLoading(true);
     setActionError("");
     try {
-      const res = await axios.get(`${API_URL}/employees/${data.email}`);
-      const employee = res.data;
-      const taskIndex = employee.tasks.findIndex(
-        (t) =>
-          (data._id && String(t._id) === String(data._id)) ||
-          (t.taskTitle === data.taskTitle &&
-            t.taskDate === data.taskDate &&
-            t.taskDescription === data.taskDescription),
-      );
-      if (taskIndex === -1) return;
-      let updatedTask = { ...employee.tasks[taskIndex] };
-      const now = new Date();
-      if (statusType === "completed") {
-        const startSource =
-          updatedTask.startedAt ||
-          updatedTask.acceptedAt ||
-          updatedTask.createdAt ||
-          updatedTask.assignedAt;
-        const startTime = startSource ? new Date(startSource) : null;
-        const derivedCompletionTime =
-          startTime && !Number.isNaN(startTime.getTime())
-            ? Math.max(0, Math.round((now - startTime) / 60000))
-            : 0;
-
-        updatedTask = {
-          ...updatedTask,
-          active: false,
-          completed: true,
-          failed: false,
-          completedAt: now,
-          completionTime: updatedTask.completionTime || derivedCompletionTime,
-        };
-      } else if (statusType === "failed") {
-        updatedTask = {
-          ...updatedTask,
-          active: false,
-          completed: false,
-          failed: true,
-          completedAt: now,
-        };
-      }
-      const updatedTasks = [...employee.tasks];
-      updatedTasks[taskIndex] = updatedTask;
-      const oldCounts = employee.taskCounts || {
-        newTask: 0,
-        completed: 0,
-        active: 0,
-        failed: 0,
-      };
-      let updatedCounts = { ...oldCounts };
-      updatedCounts.active = Math.max((oldCounts.active || 0) - 1, 0);
-      if (statusType === "completed") {
-        updatedCounts.completed = (oldCounts.completed || 0) + 1;
-      } else if (statusType === "failed") {
-        updatedCounts.failed = (oldCounts.failed || 0) + 1;
-      }
-      const updatedEmployee = {
-        ...employee,
-        tasks: updatedTasks,
-        taskCounts: updatedCounts,
-      };
-      await axios.put(
-        `${API_URL}/employees/${employee.email}`,
-        updatedEmployee,
-      );
+      const res = isGroupTask
+        ? await axios.post(`${API_URL}/group-tasks/${data.groupId}/status`, {
+            employeeEmail: data.email,
+            status: statusType,
+          })
+        : await axios.post(
+            `${API_URL}/employees/${data.email}/tasks/${data._id}/status`,
+            { status: statusType },
+          );
+      const updatedTask = res.data?.task;
+      if (!updatedTask) throw new Error("Task status update failed");
       if (onStatusChange) {
         const taskKey = data._id || `${data.taskTitle}-${data.taskDate}`;
         onStatusChange({
@@ -231,7 +183,6 @@ const AcceptTask = ({
           updatedTask,
         });
       }
-      setStatus(statusType);
       setActionError("");
       setSuccess(
         statusType === "completed"
@@ -240,6 +191,7 @@ const AcceptTask = ({
       );
       setTimeout(() => setSuccess(""), 3000);
     } catch (err) {
+      setStatus(previousStatus);
       const message =
         err?.response?.data?.error ||
         "Unable to update task status right now. Please retry.";
@@ -280,17 +232,39 @@ const AcceptTask = ({
         .filter(Boolean);
     }
 
-    return buildChecklistItems(
-      insightPayload?.steps,
+    const singleSteps =
+      Array.isArray(data?.explainSteps) && data.explainSteps.length > 0
+        ? data.explainSteps
+        : insightPayload?.steps;
+    const serverCheckedMap = buildCheckedMapFromStepChecks(
+      singleSteps,
+      data?.explainStepChecks,
+    );
+    const checkedMapFromInsight =
       insightPayload?.checkedMap &&
-        typeof insightPayload.checkedMap === "object"
+      typeof insightPayload.checkedMap === "object"
         ? insightPayload.checkedMap
-        : {},
+        : {};
+    const resolvedCheckedMap =
+      Object.keys(serverCheckedMap).length > 0
+        ? serverCheckedMap
+        : checkedMapFromInsight;
+
+    return buildChecklistItems(
+      singleSteps,
+      resolvedCheckedMap,
     ).map((item) => ({
       ...item,
       assignedToCurrent: true,
     }));
-  }, [insightPayload, groupAssignments, isGroupTask, normalizedEmail]);
+  }, [
+    data?.explainSteps,
+    data?.explainStepChecks,
+    insightPayload,
+    groupAssignments,
+    isGroupTask,
+    normalizedEmail,
+  ]);
 
   const ownedChecklistItems = useMemo(
     () => checklistItems.filter((item) => item.assignedToCurrent),
@@ -299,8 +273,9 @@ const AcceptTask = ({
   const completedCount = ownedChecklistItems.filter(
     (item) => item.completed,
   ).length;
+  const hasCompletionChecklist = ownedChecklistItems.length > 0;
   const isCompletionEligible =
-    ownedChecklistItems.length === 0 ||
+    hasCompletionChecklist &&
     ownedChecklistItems.every((item) => item.completed);
   const summaryPoints = useMemo(
     () => toSummaryPoints(insightPayload?.summary),
@@ -345,14 +320,6 @@ const AcceptTask = ({
       );
       const fetched = response.data;
 
-      if (fetched?.fromFallback) {
-        setInsightError(
-          "AI insights are currently unavailable. Continue with your task details and checklist planning manually.",
-        );
-        setIsInsightsVisible(true);
-        return;
-      }
-
       const normalized = {
         summary: String(fetched?.summary || "").trim(),
         estimated_time: String(
@@ -360,6 +327,9 @@ const AcceptTask = ({
         ).trim(),
         steps: normalizeSteps(fetched?.steps),
         checkedMap: {},
+        source:
+          fetched?.source ||
+          (fetched?.fromFallback ? "System" : "AI"),
       };
 
       if (!normalized.summary && normalized.steps.length === 0) {
@@ -368,6 +338,11 @@ const AcceptTask = ({
 
       setInsightPayload(normalized);
       writeCachedInsight(cacheKey, normalized);
+      setInsightError(
+        fetched?.fromFallback
+          ? "AI is unavailable, so this checklist is system-generated."
+          : "",
+      );
       setIsInsightsVisible(true);
     } catch {
       setInsightError(
@@ -391,13 +366,16 @@ const AcceptTask = ({
     if (subtaskPending[item.id]) return;
     const lastClick = lastSubtaskClickRef.current[item.id] || 0;
     const now = Date.now();
-    if (now - lastClick < 400) return;
+    if (now - lastClick < 50) return;
     lastSubtaskClickRef.current[item.id] = now;
     setSubtaskPending((prev) => ({ ...prev, [item.id]: true }));
     setSubtaskErrors((prev) => ({ ...prev, [item.id]: "" }));
 
     if (isGroupTask) {
-      if (item.groupIndex === undefined) return;
+      if (item.groupIndex === undefined) {
+        setSubtaskPending((prev) => ({ ...prev, [item.id]: false }));
+        return;
+      }
       const previousAssignments = Array.isArray(groupAssignments)
         ? groupAssignments
         : [];
@@ -437,7 +415,10 @@ const AcceptTask = ({
       return;
     }
 
-    if (item.stepIndex === undefined || !data?._id) return;
+    if (item.stepIndex === undefined || !data?._id) {
+      setSubtaskPending((prev) => ({ ...prev, [item.id]: false }));
+      return;
+    }
     const previousCheckedMap =
       insightPayload?.checkedMap &&
       typeof insightPayload.checkedMap === "object"
@@ -472,10 +453,9 @@ const AcceptTask = ({
             prev.steps,
             stepChecks,
           );
-          const mergedCheckedMap = { ...nextCheckedMap, ...optimisticMap }; // Keep optimistic updates
           const nextPayload = {
             ...prev,
-            checkedMap: mergedCheckedMap,
+            checkedMap: nextCheckedMap,
           };
           writeCachedInsight(cacheKey, nextPayload);
           return nextPayload;
@@ -533,7 +513,7 @@ const AcceptTask = ({
       </div>
       <div className="flex flex-wrap items-center gap-2 mt-2 flex-shrink-0">
         <span className="text-xs font-semibold bg-black/10 text-white px-2 py-1 rounded">
-          AI Suggested Priority: {data.aiPriority || "Medium"}
+          Priority: {data.aiPriority || "Medium"}
         </span>
         <TaskRiskBadge task={data} />
         <GroupTaskBadge task={data} />
@@ -590,10 +570,11 @@ const AcceptTask = ({
         <button
           onClick={loadInsights}
           className="mt-3 w-full rounded-lg border border-white/25 bg-white/15 px-2.5 py-2 text-left text-[11px] leading-relaxed text-white/95 transition-all duration-200 hover:bg-white/20"
-          title="Open AI Insights"
+          title="Open task guidance"
         >
           <p className="text-[10px] font-semibold uppercase tracking-wide text-white/80">
-            AI insights ready
+            {data?.explainSource === "AI" ? "AI insights ready" : "Task guidance ready"}
+            <DataSourceBadge source={data?.explainSource || "System"} />
           </p>
           <p className="mt-1 line-clamp-2">{teaserText}</p>
         </button>
@@ -604,10 +585,10 @@ const AcceptTask = ({
           disabled={isInsightLoading}
         >
           {isInsightLoading
-            ? "Loading AI Insights..."
+            ? "Loading guidance..."
             : isInsightsVisible
-              ? "Hide AI Insights"
-              : "AI Insights"}
+              ? "Hide Guidance"
+              : "Generate Guidance"}
         </button>
       )}
 
@@ -629,10 +610,17 @@ const AcceptTask = ({
             className="h-full min-h-0 space-y-2 overflow-y-auto overflow-x-hidden overscroll-contain pr-1"
             style={{ scrollbarGutter: "stable" }}
           >
-            {insightError ? (
-              <p className="text-xs font-medium opacity-90">{insightError}</p>
-            ) : (
+            {insightError && (
+              <p className="rounded-md border border-white/10 bg-black/10 px-2 py-1.5 text-xs font-medium opacity-90">
+                {insightError}
+              </p>
+            )}
+            {insightPayload && (
               <>
+                <p className="text-[11px] font-semibold uppercase tracking-wide opacity-80">
+                  {insightPayload.source === "AI" ? "AI insights" : "Task guidance"}
+                  <DataSourceBadge source={insightPayload.source || "System"} />
+                </p>
                 {summaryPoints.length > 0 && (
                   <section className="rounded-md border border-white/10 bg-black/10 p-2">
                     <p className="text-[11px] font-semibold uppercase tracking-wide opacity-80">

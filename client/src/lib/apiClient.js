@@ -19,7 +19,7 @@ const getRetryDelay = (error, attempt) => {
     return Math.max(800, retryAfterMs);
   }
 
-  return 600 * attempt;
+  return 220 * attempt;
 };
 
 export const sanitizeApiError = (error, fallback = "Something went wrong.") => {
@@ -39,7 +39,7 @@ export const sanitizeApiError = (error, fallback = "Something went wrong.") => {
 export const requestWithRetry = async (
   requestFactory,
   {
-    maxRetries = 2,
+    maxRetries = 1,
     retryOnStatuses = [429, 500, 502, 503, 504],
     fallbackValue,
   } = {},

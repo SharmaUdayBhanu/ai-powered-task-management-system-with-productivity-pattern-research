@@ -202,6 +202,12 @@ export async function callGemini(prompt, options = {}) {
   const normalizedPrompt = compactPrompt(prompt);
   const promptLength = normalizedPrompt.length;
   const timeoutMs = Number(options.timeoutMs) || 15000;
+  const temperature = Number.isFinite(Number(options.temperature))
+    ? Number(options.temperature)
+    : 0.3;
+  const maxTokens = Number.isFinite(Number(options.maxTokens))
+    ? Number(options.maxTokens)
+    : 2048;
   let attempt = 0;
   let lastError;
 
@@ -254,8 +260,8 @@ export async function callGemini(prompt, options = {}) {
         const response = await withTimeout(
           groq.chat.completions.create({
             model,
-            temperature: 0.3,
-            max_tokens: 2048,
+            temperature,
+            max_tokens: maxTokens,
             messages: [
               {
                 role: "user",

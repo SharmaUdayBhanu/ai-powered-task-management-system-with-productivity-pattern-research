@@ -454,7 +454,7 @@ const ProductivityDashboard = ({ employee, theme = "dark" }) => {
                 theme === "dark" ? "text-white" : "text-gray-900"
               }`}
             >
-              AI Insights
+              {narrativeSource === "AI" ? "AI Insights" : "Productivity Guidance"}
             </h3>
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
               <div

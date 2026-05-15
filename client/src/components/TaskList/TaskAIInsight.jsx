@@ -7,6 +7,7 @@ const TaskAIInsight = ({
   summary,
   steps = [],
   estimatedTime,
+  source = "SYS",
   theme = "dark",
 }) => {
   const [isExpandedModalOpen, setIsExpandedModalOpen] = useState(false);
@@ -28,6 +29,9 @@ const TaskAIInsight = ({
   }, [summary, steps, estimatedTime]);
 
   if (!summary) return null;
+  const normalizedSource =
+    source === "AI" || source === "ai" || source === "Ai" ? "AI" : "SYS";
+  const heading = normalizedSource === "AI" ? "AI Guidance" : "Task Guidance";
 
   const containerClass =
     theme === "dark"
@@ -60,8 +64,8 @@ const TaskAIInsight = ({
           theme === "dark" ? "opacity-80" : "opacity-90"
         }`}
       >
-        AI Guidance
-        <DataSourceBadge source="AI" />
+        {heading}
+        <DataSourceBadge source={normalizedSource} />
       </p>
       <p
         className={`text-sm mt-1.5 leading-relaxed ${
@@ -150,7 +154,7 @@ const TaskAIInsight = ({
                   theme === "dark" ? "border-white/10" : "border-gray-200"
                 }`}
               >
-                <h4 className="text-sm font-semibold">AI Guidance Overview</h4>
+                <h4 className="text-sm font-semibold">{heading} Overview</h4>
                 <button
                   type="button"
                   onClick={() => setIsExpandedModalOpen(false)}

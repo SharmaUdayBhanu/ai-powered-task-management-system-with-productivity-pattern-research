@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+﻿import React, { useEffect, useMemo, useRef, useState } from "react";
 import { postWithRetry } from "../lib/apiClient";
 import DataSourceBadge from "./DataSourceBadge";
 
@@ -14,6 +14,7 @@ const ExplainTaskModal = ({
   employeeEmail,
   groupId,
   taskCompleted,
+  onChecklistSync,
 }) => {
   // Prevent body scroll when modal is open
   useEffect(() => {
@@ -142,7 +143,7 @@ const ExplainTaskModal = ({
     if (subtaskPending[item.id]) return;
     const lastClick = lastSubtaskClickRef.current[item.id] || 0;
     const now = Date.now();
-    if (now - lastClick < 400) return;
+    if (now - lastClick < 50) return;
     lastSubtaskClickRef.current[item.id] = now;
     setSubtaskPending((prev) => ({ ...prev, [item.id]: true }));
     setSubtaskErrors((prev) => ({ ...prev, [item.id]: "" }));
@@ -155,7 +156,10 @@ const ExplainTaskModal = ({
         setSubtaskPending((prev) => ({ ...prev, [item.id]: false }));
         return;
       }
-      if (item.groupIndex === undefined) return;
+      if (item.groupIndex === undefined) {
+        setSubtaskPending((prev) => ({ ...prev, [item.id]: false }));
+        return;
+      }
       const previousAssignments = Array.isArray(assignmentState)
         ? assignmentState
         : [];
@@ -181,6 +185,11 @@ const ExplainTaskModal = ({
         );
         if (Array.isArray(response.data?.assignments)) {
           setAssignmentState(response.data.assignments);
+          if (typeof onChecklistSync === "function") {
+            onChecklistSync({
+              groupStepAssignments: response.data.assignments,
+            });
+          }
         }
       } catch {
         setAssignmentState(previousAssignments);
@@ -194,7 +203,10 @@ const ExplainTaskModal = ({
       return;
     }
 
-    if (item.stepIndex === undefined || !taskId) return;
+    if (item.stepIndex === undefined || !taskId) {
+      setSubtaskPending((prev) => ({ ...prev, [item.id]: false }));
+      return;
+    }
     const previousCheckedMap = { ...checkedMap };
     const nextCheckedMap = {
       ...checkedMap,
@@ -221,10 +233,14 @@ const ExplainTaskModal = ({
           if (candidate.stepIndex === undefined) return;
           nextMap[candidate.id] = Boolean(nextChecks[candidate.stepIndex]);
         });
-        const mergedMap = { ...nextMap, ...nextCheckedMap };
-        setCheckedMap(mergedMap);
+        setCheckedMap(nextMap);
+        if (typeof onChecklistSync === "function") {
+          onChecklistSync({
+            stepChecks: nextChecks,
+          });
+        }
         try {
-          localStorage.setItem(checklistStorageKey, JSON.stringify(mergedMap));
+          localStorage.setItem(checklistStorageKey, JSON.stringify(nextMap));
         } catch {
           // ignore storage failures
         }
@@ -287,7 +303,7 @@ const ExplainTaskModal = ({
             onClick={onClose}
             className={`${closeBtnClass} text-xl font-bold w-8 h-8 flex items-center justify-center rounded-full hover:bg-black/10 transition-colors`}
           >
-            ×
+            x
           </button>
         </div>
 
@@ -490,3 +506,4 @@ const ExplainTaskModal = ({
 };
 
 export default ExplainTaskModal;
+

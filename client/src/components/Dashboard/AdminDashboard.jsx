@@ -6,6 +6,7 @@ import React, {
   useState,
 } from "react";
 import axios from "axios";
+import { AlertTriangle, Moon, Sun } from "lucide-react";
 import getSocket from "../../lib/socket";
 import Header from "../other/Header";
 import CreateTask from "../other/CreateTask";
@@ -315,13 +316,9 @@ const AdminDashboard = () => {
   );
 
   const fetchDashboardData = useCallback(async ({ includeAI = false } = {}) => {
-    const rankingParams = new URLSearchParams({
-      includeAI: String(includeAI),
-      ...(includeAI && { force: "true" }),
-    }).toString();
     const [employeeRes, rankingRes] = await Promise.allSettled([
       getWithRetry("/employees", { fallbackValue: { data: [] } }),
-      getWithRetry(`/productivity/rankings?${rankingParams}`, {
+      getWithRetry(`/productivity/rankings?includeAI=${includeAI}`, {
         fallbackValue: {
           data: {
             leaderboard: [],
@@ -773,19 +770,20 @@ const AdminDashboard = () => {
   };
 
   const promptExtensionMinutes = (label) => {
-    const hoursRaw = window.prompt(
-      `Extend by hours${label ? ` for ${label}` : ""}?`,
+    const raw = window.prompt(
+      `Enter extension as HH:MM${label ? ` for ${label}` : ""} (example: 01:30)`,
     );
-    if (hoursRaw === null) return null;
-    const minutesRaw = window.prompt(
-      `Extend by minutes${label ? ` for ${label}` : ""}?`,
-    );
-    if (minutesRaw === null) return null;
-
-    const hours = Number(hoursRaw || 0);
-    const minutes = Number(minutesRaw || 0);
-    if (!Number.isFinite(hours) || !Number.isFinite(minutes)) {
-      window.alert("Please enter valid numbers for hours and minutes.");
+    if (raw === null) return null;
+    const value = String(raw || "").trim();
+    const match = value.match(/^(\d{1,3})\s*:\s*(\d{1,2})$/);
+    if (!match) {
+      window.alert("Use HH:MM format, for example 01:30.");
+      return null;
+    }
+    const hours = Number.parseInt(match[1], 10);
+    const minutes = Number.parseInt(match[2], 10);
+    if (!Number.isFinite(hours) || !Number.isFinite(minutes) || minutes > 59) {
+      window.alert("Please enter a valid HH:MM value.");
       return null;
     }
     const totalMinutes = hours * 60 + minutes;
@@ -796,25 +794,23 @@ const AdminDashboard = () => {
     return totalMinutes;
   };
 
-  const addDaysToTaskDateLocal = (taskDate, days) => {
-    if (!taskDate) return taskDate;
-    const parsed = new Date(taskDate);
-    if (Number.isNaN(parsed.getTime())) return taskDate;
-    const next = new Date(parsed);
-    next.setDate(next.getDate() + days);
-    return next.toISOString().slice(0, 10);
-  };
-
   const handleExtendSingleTask = async (task) => {
     if (!task?.taskId || !task?.employeeEmail) return;
     const totalMinutes = promptExtensionMinutes(task.taskTitle);
     if (!totalMinutes) return;
-    const days = totalMinutes / (24 * 60);
     try {
-      await axios.post(
+      const response = await axios.post(
         `${API_URL}/employees/${task.employeeEmail}/tasks/${task.taskId}/extend`,
-        { days },
+        { minutes: totalMinutes },
       );
+      const updatedEmployee = response.data?.employee;
+      if (updatedEmployee?.email) {
+        setEmployees((prev) =>
+          prev.map((employee) =>
+            employee.email === updatedEmployee.email ? updatedEmployee : employee,
+          ),
+        );
+      }
       const addedMinutes = Math.round(totalMinutes);
       const nowIso = new Date().toISOString();
       setEmployees((prev) =>
@@ -828,10 +824,6 @@ const AdminDashboard = () => {
               0,
               Number(updated.estimatedDuration || 0) + addedMinutes,
             );
-            const nextDate = addDaysToTaskDateLocal(updated.taskDate, days);
-            if (nextDate) {
-              updated.taskDate = nextDate;
-            }
             if (updated.failed) {
               updated.failed = false;
               updated.completed = false;
@@ -864,11 +856,21 @@ const AdminDashboard = () => {
     if (!task?.groupId) return;
     const totalMinutes = promptExtensionMinutes(task.taskTitle);
     if (!totalMinutes) return;
-    const days = totalMinutes / (24 * 60);
     try {
-      await axios.post(`${API_URL}/group-tasks/${task.groupId}/extend`, {
-        days,
+      const response = await axios.post(`${API_URL}/group-tasks/${task.groupId}/extend`, {
+        minutes: totalMinutes,
       });
+      const updatedEmployees = Array.isArray(response.data?.employees)
+        ? response.data.employees
+        : [];
+      if (updatedEmployees.length > 0) {
+        const byEmail = new Map(
+          updatedEmployees.map((employee) => [employee.email, employee]),
+        );
+        setEmployees((prev) =>
+          prev.map((employee) => byEmail.get(employee.email) || employee),
+        );
+      }
       const addedMinutes = Math.round(totalMinutes);
       const nowIso = new Date().toISOString();
       setEmployees((prev) =>
@@ -880,10 +882,6 @@ const AdminDashboard = () => {
               0,
               Number(updated.estimatedDuration || 0) + addedMinutes,
             );
-            const nextDate = addDaysToTaskDateLocal(updated.taskDate, days);
-            if (nextDate) {
-              updated.taskDate = nextDate;
-            }
             if (Array.isArray(updated.groupMemberEstimates)) {
               updated.groupMemberEstimates = updated.groupMemberEstimates.map(
                 (member) => ({
@@ -924,12 +922,22 @@ const AdminDashboard = () => {
     if (!task?.groupId || !member?.email) return;
     const totalMinutes = promptExtensionMinutes(member.name || member.email);
     if (!totalMinutes) return;
-    const days = totalMinutes / (24 * 60);
     try {
-      await axios.post(`${API_URL}/group-tasks/${task.groupId}/extend`, {
-        days,
+      const response = await axios.post(`${API_URL}/group-tasks/${task.groupId}/extend`, {
+        minutes: totalMinutes,
         memberEmail: member.email,
       });
+      const updatedEmployees = Array.isArray(response.data?.employees)
+        ? response.data.employees
+        : [];
+      if (updatedEmployees.length > 0) {
+        const byEmail = new Map(
+          updatedEmployees.map((employee) => [employee.email, employee]),
+        );
+        setEmployees((prev) =>
+          prev.map((employee) => byEmail.get(employee.email) || employee),
+        );
+      }
       const addedMinutes = Math.round(totalMinutes);
       const nowIso = new Date().toISOString();
       const memberEmail = String(member.email || "").toLowerCase();
@@ -992,6 +1000,7 @@ const AdminDashboard = () => {
   const taskMonitoringData = useMemo(() => {
     const nowMs = Date.now();
     const singleTasks = [];
+    const singleTaskKeys = new Set();
     const groupMap = new Map();
     const employeeNameByEmail = new Map(
       employees.map((employee) => [
@@ -1040,7 +1049,7 @@ const AdminDashboard = () => {
           return;
         }
 
-        if (task?.groupTask && task?.groupId) {
+        if (task?.groupId) {
           if (task?.completed && !task?.failed) return;
           const entry = ensureGroupEntry(task);
           if (!entry) return;
@@ -1052,14 +1061,14 @@ const AdminDashboard = () => {
             entry.groupMembers = task.groupMembers;
           }
           if (
-            !entry.assignments.length &&
-            Array.isArray(task.groupStepAssignments)
+            Array.isArray(task.groupStepAssignments) &&
+            task.groupStepAssignments.length >= entry.assignments.length
           ) {
             entry.assignments = task.groupStepAssignments;
           }
           if (
-            !entry.groupMemberEstimates.length &&
-            Array.isArray(task.groupMemberEstimates)
+            Array.isArray(task.groupMemberEstimates) &&
+            task.groupMemberEstimates.length >= entry.groupMemberEstimates.length
           ) {
             entry.groupMemberEstimates = task.groupMemberEstimates;
           }
@@ -1069,11 +1078,7 @@ const AdminDashboard = () => {
           if (!entry.explainEstimatedTime && task.explainEstimatedTime) {
             entry.explainEstimatedTime = task.explainEstimatedTime;
           }
-          if (
-            (!entry.groupAcceptedEmails ||
-              entry.groupAcceptedEmails.length === 0) &&
-            Array.isArray(task.groupAcceptedEmails)
-          ) {
+          if (Array.isArray(task.groupAcceptedEmails)) {
             entry.groupAcceptedEmails = task.groupAcceptedEmails;
           }
           return;
@@ -1115,6 +1120,14 @@ const AdminDashboard = () => {
           const statusLabel = isOverdue ? "Failed" : "Active";
           const displayProgressPercent =
             statusLabel === "Failed" ? 0 : progressPercent;
+          const singleKey =
+            task._id
+              ? `single:${String(task._id)}`
+              : `single:${String(employee.email || "").toLowerCase()}:${task.taskTitle}:${task.taskDate}`;
+          if (singleTaskKeys.has(singleKey)) {
+            return;
+          }
+          singleTaskKeys.add(singleKey);
           singleTasks.push({
             id: task._id || `${task.taskTitle}-${task.taskDate}`,
             taskId: task._id,
@@ -1149,6 +1162,14 @@ const AdminDashboard = () => {
           const progressPercent = steps.length
             ? Math.round((completedSteps / steps.length) * 100)
             : 0;
+          const singleKey =
+            task._id
+              ? `single:${String(task._id)}`
+              : `single:${String(employee.email || "").toLowerCase()}:${task.taskTitle}:${task.taskDate}`;
+          if (singleTaskKeys.has(singleKey)) {
+            return;
+          }
+          singleTaskKeys.add(singleKey);
           singleTasks.push({
             id: task._id || `${task.taskTitle}-${task.taskDate}`,
             taskId: task._id,
@@ -1312,6 +1333,48 @@ const AdminDashboard = () => {
 
     return recommendations;
   }, [adminKpis, topPerformer, lowPerformer]);
+
+  const adminAlerts = useMemo(() => {
+    const alerts = [];
+    const overdueSingles = (taskMonitoringData.singleTasks || []).filter(
+      (task) => Number(task.remainingMs) < 0,
+    );
+    const overdueGroups = (taskMonitoringData.groupTasks || []).filter(
+      (task) => Number(task.overallRemainingMs) < 0 || task.hasFailed,
+    );
+    const overloadedEmployees = employeeCards.filter(
+      (employee) => employee.workloadStatus?.label === "Overloaded",
+    );
+
+    if (overdueSingles.length || overdueGroups.length) {
+      alerts.push({
+        tone: "critical",
+        title: "Overdue work needs attention",
+        detail: `${overdueSingles.length + overdueGroups.length} tracked task(s) are overdue or failed. Review extensions, blockers, or reassignment now.`,
+      });
+    }
+
+    if (overloadedEmployees.length) {
+      alerts.push({
+        tone: "warning",
+        title: "Workload imbalance detected",
+        detail: `${overloadedEmployees.map((employee) => employee.firstName || employee.email).join(", ")} show overloaded queue signals from active/new tasks and completion pressure.`,
+      });
+    }
+
+    if (
+      teamOutcomeBreakdown.teamCondition === "Needs Intervention" &&
+      teamOutcomeBreakdown.failed > 0
+    ) {
+      alerts.push({
+        tone: "warning",
+        title: "Team performance is slipping",
+        detail: `${teamOutcomeBreakdown.failed} failed outcome(s) against ${teamOutcomeBreakdown.completed} completed outcome(s). Prioritize failure review and short checkpoints.`,
+      });
+    }
+
+    return alerts.slice(0, 3);
+  }, [employeeCards, taskMonitoringData, teamOutcomeBreakdown]);
 
   const aiSummaryText = useMemo(() => {
     if (leaderboardData.aiInsights?.summary)
@@ -1481,20 +1544,20 @@ const AdminDashboard = () => {
     <div
       className={
         theme === "dark"
-          ? "min-h-screen bg-[#121212] p-2 md:p-8"
-          : "min-h-screen bg-[#f4f6fb] p-2 md:p-8"
+          ? "dashboard-shell dashboard-shell-dark min-h-screen bg-[#121212] p-2 md:p-8"
+          : "dashboard-shell dashboard-shell-light min-h-screen bg-[#f4f6fb] p-2 md:p-8"
       }
     >
       <div className="mb-2 flex justify-end">
         <button
           className={
             theme === "dark"
-              ? "px-4 py-2 rounded bg-gray-700 text-white flex items-center gap-2"
-              : "px-4 py-2 rounded bg-yellow-300 text-black flex items-center gap-2"
+              ? "dashboard-action flex h-11 items-center gap-2 rounded-full border border-white/15 bg-[#111111] px-4 text-white"
+              : "dashboard-action flex h-11 items-center gap-2 rounded-full border border-gray-300 bg-white px-4 text-gray-900"
           }
           onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
         >
-          <span>{theme === "dark" ? "🌙" : "☀️"}</span>
+          {theme === "dark" ? <Moon size={16} /> : <Sun size={16} />}
           <span className="font-semibold">
             {theme === "dark" ? "Dark" : "Light"} Mode
           </span>
@@ -1529,6 +1592,32 @@ const AdminDashboard = () => {
               <strong>{teamOutcomeBreakdown.teamCondition}</strong>
             </span>
           </div>
+
+          {adminAlerts.length > 0 && (
+            <div className="mt-4 grid grid-cols-1 gap-2 lg:grid-cols-3">
+              {adminAlerts.map((alert) => (
+                <div
+                  key={alert.title}
+                  title={alert.detail}
+                  className={`flex items-start gap-2 rounded-lg border px-3 py-2 text-xs ${
+                    alert.tone === "critical"
+                      ? theme === "dark"
+                        ? "border-red-400/40 bg-red-500/15 text-red-100"
+                        : "border-red-200 bg-red-50 text-red-700"
+                      : theme === "dark"
+                        ? "border-amber-400/40 bg-amber-500/15 text-amber-100"
+                        : "border-amber-200 bg-amber-50 text-amber-800"
+                  }`}
+                >
+                  <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+                  <span>
+                    <strong>{alert.title}</strong>
+                    <span className="block opacity-85">{alert.detail}</span>
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
 
           <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
             <SummaryCard

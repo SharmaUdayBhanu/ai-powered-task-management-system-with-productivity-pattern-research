@@ -7,7 +7,9 @@ const AdminProductivityLeaderboard = ({
   loading,
   error,
   theme = "dark",
+  insightEngine = "sys",
 }) => {
+  const insightSource = insightEngine === "ai" ? "AI" : "SYS";
   const containerClass =
     theme === "dark"
       ? "mt-6 bg-[#111] border border-white/10 rounded-xl p-4"
@@ -103,7 +105,9 @@ const AdminProductivityLeaderboard = ({
               <h3
                 className={`text-sm font-semibold mb-3 ${theme === "dark" ? "text-white" : "text-gray-900"}`}
               >
-                AI Competitive Analysis for Admin
+                {insightSource === "AI"
+                  ? "AI Competitive Analysis for Admin"
+                  : "Competitive Analysis for Admin"}
               </h3>
 
               {aiInsights.summary && (
@@ -184,7 +188,7 @@ const AdminProductivityLeaderboard = ({
                         items={aiInsights.recommendations}
                         limit={5}
                         theme={theme}
-                        source="AI"
+                        source={insightSource}
                       />
                     </div>
                   </div>

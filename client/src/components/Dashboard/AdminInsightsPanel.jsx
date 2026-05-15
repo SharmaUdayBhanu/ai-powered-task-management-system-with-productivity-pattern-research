@@ -1,7 +1,8 @@
 import React, { useMemo, useState } from "react";
 
 const getAiStatus = (task) => {
-  if (task?.explainSummary || task?.aiPriorityReason) return "ready";
+  if (task?.explainSource === "AI") return "ready";
+  if (task?.explainSummary || task?.aiPriorityReason) return "system";
   if (task?.failed) return "retry";
   return "failed";
 };
@@ -10,6 +11,10 @@ const statusMeta = {
   ready: {
     label: "AI Ready",
     className: "bg-emerald-500/20 text-emerald-400",
+  },
+  system: {
+    label: "SYS Ready",
+    className: "bg-slate-500/20 text-slate-300",
   },
   failed: {
     label: "AI Failed",
@@ -66,7 +71,7 @@ const AdminInsightsPanel = ({
     >
       <div className="mb-4 flex items-center justify-between">
         <div>
-          <h2 className="text-lg font-semibold">AI Insights & Task Logs</h2>
+          <h2 className="text-lg font-semibold">Insights & Task Logs</h2>
           <p className="text-xs opacity-70">
             Actionable summaries with quick retries, no technical noise.
           </p>

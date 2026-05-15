@@ -43,6 +43,39 @@ const getTaskAliasIds = (task) => {
   return ids;
 };
 
+const mergeTaskWithUiOverride = (task, override) => {
+  if (!override) return task;
+  // Keep realtime/server-owned timing fields authoritative so tile timers stay current.
+  const {
+    completed,
+    failed,
+    active,
+    newTask,
+    notAccepted,
+    explainSummary,
+    explainSteps,
+    explainStepChecks,
+    explainEstimatedTime,
+    explainSource,
+    groupStepAssignments,
+  } = override;
+
+  return {
+    ...task,
+    ...(completed !== undefined ? { completed } : {}),
+    ...(failed !== undefined ? { failed } : {}),
+    ...(active !== undefined ? { active } : {}),
+    ...(newTask !== undefined ? { newTask } : {}),
+    ...(notAccepted !== undefined ? { notAccepted } : {}),
+    ...(explainSummary !== undefined ? { explainSummary } : {}),
+    ...(explainSteps !== undefined ? { explainSteps } : {}),
+    ...(explainStepChecks !== undefined ? { explainStepChecks } : {}),
+    ...(explainEstimatedTime !== undefined ? { explainEstimatedTime } : {}),
+    ...(explainSource !== undefined ? { explainSource } : {}),
+    ...(groupStepAssignments !== undefined ? { groupStepAssignments } : {}),
+  };
+};
+
 const matchesFilter = (task, filter) => {
   if (filter === "all") return true;
   if (filter === "pending") return task.newTask || task.active;
@@ -85,7 +118,14 @@ const hasValidExplanation = (payload) =>
       (Array.isArray(payload.steps) && payload.steps.length > 0)),
   );
 
-const TaskList = ({ data, onAccept, vertical, theme, onModalStateChange }) => {
+const TaskList = ({
+  data,
+  onAccept,
+  onTaskChange,
+  vertical,
+  theme,
+  onModalStateChange,
+}) => {
   const explainedStorageKey = `explained-ai-tasks:${data.email}`;
   const [modalOpen, setModalOpen] = useState(false);
   const [modalLoading, setModalLoading] = useState(false);
@@ -127,7 +167,7 @@ const TaskList = ({ data, onAccept, vertical, theme, onModalStateChange }) => {
     const mergedTasks = dedupeTasksByStableId(data.tasks || []).map((task) => {
       const aliases = getTaskAliasIds(task);
       const override = aliases.map((id) => taskOverrides[id]).find(Boolean);
-      return override ? { ...task, ...override } : task;
+      return mergeTaskWithUiOverride(task, override);
     });
 
     const filtered = mergedTasks.filter(
@@ -146,8 +186,8 @@ const TaskList = ({ data, onAccept, vertical, theme, onModalStateChange }) => {
   }, [data.tasks, activeFilter, taskOverrides]);
 
   const currentTask = useMemo(
-    () => (data.tasks || []).find((task) => getTaskId(task) === currentTaskId),
-    [data.tasks, currentTaskId],
+    () => visibleTasks.find((task) => getTaskId(task) === currentTaskId),
+    [visibleTasks, currentTaskId],
   );
 
   const handleStatusChange = (payload) => {
@@ -162,6 +202,9 @@ const TaskList = ({ data, onAccept, vertical, theme, onModalStateChange }) => {
         active: false,
       },
     }));
+    if (typeof onTaskChange === "function") {
+      onTaskChange(payload);
+    }
   };
 
   const handleAcceptTask = (payload) => {
@@ -180,7 +223,7 @@ const TaskList = ({ data, onAccept, vertical, theme, onModalStateChange }) => {
       });
     }
     if (typeof onAccept === "function") {
-      onAccept();
+      onAccept(payload);
     }
   };
 
@@ -348,7 +391,7 @@ const TaskList = ({ data, onAccept, vertical, theme, onModalStateChange }) => {
         stepChecks: Array.isArray(task.explainStepChecks)
           ? task.explainStepChecks
           : [],
-        source: task.explainSource || "AI",
+        source: task.explainSource || "System",
         fromCache: true,
       };
       modalStateRef.current.explanation = cachedExplanation;
@@ -386,6 +429,32 @@ const TaskList = ({ data, onAccept, vertical, theme, onModalStateChange }) => {
       modalStateRef.current.explanation = res.data;
       setExplanation(res.data);
       setExplainedTaskIds((prev) => new Set(prev).add(taskId));
+      const updatedTask = {
+        ...task,
+        explainSummary: res.data.summary || task.explainSummary,
+        explainSteps: Array.isArray(res.data.steps)
+          ? res.data.steps
+          : task.explainSteps,
+        explainStepChecks: Array.isArray(res.data.stepChecks)
+          ? res.data.stepChecks
+          : task.explainStepChecks,
+        explainEstimatedTime:
+          res.data.estimated_time || task.explainEstimatedTime,
+        explainSource:
+          res.data.source || (res.data.fromFallback ? "System" : "AI"),
+        groupStepAssignments: Array.isArray(res.data.stepAssignments)
+          ? res.data.stepAssignments
+          : task.groupStepAssignments,
+      };
+      const aliases = getTaskAliasIds(updatedTask);
+      setTaskOverrides((prev) => {
+        const next = { ...prev };
+        aliases.forEach((id) => {
+          next[id] = updatedTask;
+        });
+        next[taskId] = updatedTask;
+        return next;
+      });
       // Don't close modal - let user close it manually
     } catch (err) {
       setModalError("Unable to load AI guidance right now. Please try again.");
@@ -501,6 +570,28 @@ const TaskList = ({ data, onAccept, vertical, theme, onModalStateChange }) => {
     // The explanation is already saved in the database, so we just need to refresh the view
     // Don't call onAccept() here as it triggers a full page reload
     // Instead, the Socket.io event will update the data when modal is closed
+  };
+
+  const handleChecklistSync = (payload = {}) => {
+    if (!currentTaskId) return;
+    const targetTask = currentTask;
+    if (!targetTask) return;
+    const nextTask = { ...targetTask };
+    if (Array.isArray(payload.stepChecks)) {
+      nextTask.explainStepChecks = payload.stepChecks;
+    }
+    if (Array.isArray(payload.groupStepAssignments)) {
+      nextTask.groupStepAssignments = payload.groupStepAssignments;
+    }
+    const aliases = getTaskAliasIds(nextTask);
+    setTaskOverrides((prev) => {
+      const next = { ...prev };
+      aliases.forEach((id) => {
+        next[id] = nextTask;
+      });
+      next[currentTaskId] = nextTask;
+      return next;
+    });
   };
 
   return (
@@ -629,10 +720,10 @@ const TaskList = ({ data, onAccept, vertical, theme, onModalStateChange }) => {
             <div
               key={taskId}
               data-task-id={taskId}
-              className={`w-full max-w-[300px] md:w-full md:max-w-[300px] flex-shrink-0 transition-all duration-500 ${
+              className={`w-full max-w-[300px] md:w-full md:max-w-[300px] flex-shrink-0 transition-[transform,box-shadow,opacity] duration-300 ease-out ${
                 isHighlighted
-                  ? "scale-110 z-10 shadow-2xl ring-4 ring-yellow-400 ring-opacity-75"
-                  : "scale-100"
+                  ? "scale-[1.015] z-10 shadow-lg opacity-100"
+                  : "scale-100 opacity-100"
               }`}
             >
               {/* Render the correct task tile */}
@@ -699,6 +790,7 @@ const TaskList = ({ data, onAccept, vertical, theme, onModalStateChange }) => {
         employeeEmail={data.email}
         groupId={currentTask?.groupId}
         taskCompleted={Boolean(currentTask?.completed)}
+        onChecklistSync={handleChecklistSync}
       />
     </>
   );

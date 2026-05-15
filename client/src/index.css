@@ -6,9 +6,101 @@
 body {
   color: #fff;
   background-color: #111;
+  font-feature-settings:
+    "cv02" 1,
+    "cv03" 1,
+    "cv04" 1;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
 }
 #tasklist::-webkit-scrollbar {
   display: none;
+}
+
+.dashboard-shell {
+  position: relative;
+  isolation: isolate;
+}
+
+.dashboard-shell::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    linear-gradient(120deg, rgba(20, 184, 166, 0.12), transparent 32%),
+    linear-gradient(300deg, rgba(245, 158, 11, 0.1), transparent 30%),
+    radial-gradient(circle at 50% 0%, rgba(255, 255, 255, 0.08), transparent 36%);
+}
+
+.dashboard-shell-light::before {
+  background:
+    linear-gradient(120deg, rgba(20, 184, 166, 0.1), transparent 34%),
+    linear-gradient(300deg, rgba(59, 130, 246, 0.09), transparent 30%),
+    radial-gradient(circle at 50% 0%, rgba(15, 23, 42, 0.08), transparent 38%);
+}
+
+.dashboard-shell section,
+.dashboard-shell article {
+  transition:
+    border-color 180ms ease,
+    box-shadow 180ms ease,
+    transform 180ms ease,
+    background-color 180ms ease;
+}
+
+.dashboard-shell section {
+  box-shadow: 0 18px 55px rgba(0, 0, 0, 0.16);
+}
+
+.dashboard-shell-light section {
+  box-shadow: 0 18px 45px rgba(15, 23, 42, 0.08);
+}
+
+.dashboard-shell article:hover {
+  transform: translateY(-2px);
+}
+
+.dashboard-action {
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.16);
+}
+
+.dashboard-shell input,
+.dashboard-shell textarea,
+.dashboard-shell select,
+.dashboard-shell button {
+  transition:
+    border-color 160ms ease,
+    background-color 160ms ease,
+    box-shadow 160ms ease,
+    transform 160ms ease,
+    opacity 160ms ease;
+}
+
+.dashboard-shell button:active {
+  transform: translateY(1px) scale(0.99);
+}
+
+.dashboard-shell ::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.dashboard-shell ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.dashboard-shell ::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.45);
+  background-clip: content-box;
+}
+
+.dashboard-shell ::-webkit-scrollbar-thumb:hover {
+  background: rgba(20, 184, 166, 0.6);
+  background-clip: content-box;
 }
 
 .chat-slip {

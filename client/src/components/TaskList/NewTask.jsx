@@ -87,34 +87,19 @@ const NewTask = ({ data, onAccept, onExplain, theme = "dark" }) => {
 
   const markTaskAsNotAccepted = async () => {
     try {
-      const res = await axios.get(`${API_URL}/employees/${data.email}`);
-      const employee = res.data;
-      const taskIndex = employee.tasks.findIndex(isSameTask);
-      if (taskIndex === -1) return;
-
-      const updatedTask = {
-        ...employee.tasks[taskIndex],
-        newTask: false,
-        active: false,
-        completed: false,
-        failed: false,
-        notAccepted: true,
-      };
-
-      const updatedTasks = [...employee.tasks];
-      updatedTasks[taskIndex] = updatedTask;
-      const updatedEmployee = {
-        ...employee,
-        tasks: updatedTasks,
-        taskCounts: computeTaskCounts(updatedTasks),
-      };
-
-      await axios.put(
-        `${API_URL}/employees/${employee.email}`,
-        updatedEmployee,
+      const res = await axios.post(
+        `${API_URL}/employees/${data.email}/tasks/${data._id}/status`,
+        { status: "notAccepted" },
       );
+      const updatedTask = res.data?.task;
+      if (!updatedTask) return;
       setTask(updatedTask);
-      if (onAccept) onAccept();
+      if (onAccept) {
+        onAccept({
+          taskId: updatedTask?._id || `${task.taskTitle}-${task.taskDate}`,
+          updatedTask,
+        });
+      }
     } catch (err) {
       setActionError("Task acceptance window expired.");
     }
@@ -152,41 +137,15 @@ const NewTask = ({ data, onAccept, onExplain, theme = "dark" }) => {
         return;
       }
 
-      const res = await axios.get(`${API_URL}/employees/${data.email}`);
-      const employee = res.data;
-      const taskIndex = employee.tasks.findIndex(isSameTask);
-      {
-        (task.notAccepted || task.newTask) && (
-          <span className="rounded-full bg-white/20 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-white/90">
-            Awaiting Acceptance
-          </span>
-        );
-      }
-      if (taskIndex === -1) return;
-      const now = new Date();
-      const updatedTask = {
-        ...employee.tasks[taskIndex],
-        newTask: false,
-        active: true,
-        completed: false,
-        failed: false,
-        completedAt: undefined,
-        onTime: true,
-        acceptedAt: now,
-        startedAt: now,
-      };
-      const updatedTasks = [...employee.tasks];
-      updatedTasks[taskIndex] = updatedTask;
-      const updatedCounts = computeTaskCounts(updatedTasks);
-      const updatedEmployee = {
-        ...employee,
-        tasks: updatedTasks,
-        taskCounts: updatedCounts,
-      };
-      await axios.put(
-        `${API_URL}/employees/${employee.email}`,
-        updatedEmployee,
+      const res = await axios.post(
+        `${API_URL}/employees/${data.email}/tasks/${task._id}/accept`,
       );
+      const updatedTask =
+        res.data?.task ||
+        res.data?.employee?.tasks?.find((candidate) => isSameTask(candidate));
+      if (!updatedTask) {
+        throw new Error("Task was not returned after acceptance.");
+      }
       setTask(updatedTask);
       if (onAccept) {
         onAccept({
@@ -205,55 +164,20 @@ const NewTask = ({ data, onAccept, onExplain, theme = "dark" }) => {
     setLoading(true);
     setActionError("");
     try {
-      const res = await axios.get(`${API_URL}/employees/${data.email}`);
-      const employee = res.data;
-      const taskIndex = employee.tasks.findIndex(isSameTask);
-      if (taskIndex === -1) return;
-      let updatedTask = { ...employee.tasks[taskIndex] };
-      const now = new Date();
-      if (statusType === "completed") {
-        const startSource =
-          updatedTask.startedAt ||
-          updatedTask.acceptedAt ||
-          updatedTask.createdAt ||
-          updatedTask.assignedAt;
-        const startTime = startSource ? new Date(startSource) : null;
-        const derivedCompletionTime =
-          startTime && !Number.isNaN(startTime.getTime())
-            ? Math.max(0, Math.round((now - startTime) / 60000))
-            : 0;
-
-        updatedTask = {
-          ...updatedTask,
-          active: false,
-          completed: true,
-          failed: false,
-          completedAt: now,
-          completionTime: updatedTask.completionTime || derivedCompletionTime,
-        };
-      } else if (statusType === "failed") {
-        updatedTask = {
-          ...updatedTask,
-          active: false,
-          completed: false,
-          failed: true,
-          completedAt: now,
-        };
-      }
-      const updatedTasks = [...employee.tasks];
-      updatedTasks[taskIndex] = updatedTask;
-      const updatedCounts = computeTaskCounts(updatedTasks);
-      const updatedEmployee = {
-        ...employee,
-        tasks: updatedTasks,
-        taskCounts: updatedCounts,
-      };
-      await axios.put(
-        `${API_URL}/employees/${employee.email}`,
-        updatedEmployee,
+      const res = await axios.post(
+        `${API_URL}/employees/${data.email}/tasks/${task._id}/status`,
+        { status: statusType },
       );
+      const updatedTask = res.data?.task;
+      if (!updatedTask) throw new Error("Task status update failed");
       setTask(updatedTask);
-      if (onAccept) onAccept();
+      if (onAccept) {
+        onAccept({
+          taskId: updatedTask?._id || `${task.taskTitle}-${task.taskDate}`,
+          statusType,
+          updatedTask,
+        });
+      }
     } catch (err) {
       setActionError("Unable to update task status right now. Please retry.");
     } finally {
@@ -272,7 +196,7 @@ const NewTask = ({ data, onAccept, onExplain, theme = "dark" }) => {
         </div>
         <div className="flex flex-wrap items-center gap-2 mt-2 flex-shrink-0">
           <span className="text-xs font-semibold bg-black/20 text-white px-2 py-1 rounded">
-            AI Suggested Priority: {task.aiPriority || "Medium"}
+            Priority: {task.aiPriority || "Medium"}
           </span>
           <TaskRiskBadge task={task} />
           <GroupTaskBadge task={task} />
@@ -295,6 +219,7 @@ const NewTask = ({ data, onAccept, onExplain, theme = "dark" }) => {
             summary={task.explainSummary}
             steps={task.explainSteps}
             estimatedTime={task.explainEstimatedTime}
+            source={task.explainSource}
             theme={theme}
           />
         </div>
@@ -357,7 +282,7 @@ const NewTask = ({ data, onAccept, onExplain, theme = "dark" }) => {
               : "bg-black/10 text-white"
           }`}
         >
-          AI Suggested Priority: {task.aiPriority || "Medium"}
+          Priority: {task.aiPriority || "Medium"}
         </span>
         <TaskRiskBadge task={task} />
         <GroupTaskBadge task={task} />
@@ -393,13 +318,11 @@ const NewTask = ({ data, onAccept, onExplain, theme = "dark" }) => {
         <button
           onClick={acceptHandler}
           className="bg-white text-green-600 p-2 rounded-lg border border-green-600 hover:bg-green-50 hover:scale-[1.02] active:scale-[0.98] transition-all duration-200 disabled:opacity-60 disabled:cursor-not-allowed"
-          disabled={
-            !task.newTask || loading || isAcceptanceExpired || task.notAccepted
-          }
+          disabled={!task.newTask || loading || task.notAccepted}
         >
           {loading
             ? "Accepting..."
-            : isAcceptanceExpired || task.notAccepted
+            : task.notAccepted
               ? "Not Accepted (Expired)"
               : "Accept Task"}
         </button>

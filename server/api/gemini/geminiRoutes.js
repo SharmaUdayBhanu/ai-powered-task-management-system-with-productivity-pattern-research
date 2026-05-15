@@ -56,7 +56,7 @@ const getExistingTaskExplanation = (task) => {
     stepChecks: Array.isArray(task.explainStepChecks)
       ? task.explainStepChecks
       : [],
-    source: task.explainSource || "AI",
+    source: task.explainSource || "System",
     fromCache: true,
   };
 };
@@ -691,6 +691,12 @@ router.post("/priority", async (req, res) => {
     return res.json({
       priority: parsed.priority || "Medium",
       reason: parsed.reason || "No reason provided",
+      estimated_duration_minutes:
+        parsed.estimated_duration_minutes ??
+        parsed.estimatedDurationMinutes ??
+        parsed.estimated_time ??
+        parsed.estimatedTime ??
+        null,
       raw,
     });
   } catch (err) {
@@ -790,9 +796,8 @@ router.post("/explain-task", async (req, res) => {
     const cooldownUntil = explainCooldownUntil.get(explainKey) || 0;
     if (Date.now() < cooldownUntil) {
       recordAiFallback("geminiRoutes.explain-task-cooldown");
-      return res.json({
-        ...fallbackExplanation,
-        fromFallback: true,
+      return res.status(429).json({
+        error: "AI guidance is temporarily rate limited. Please retry shortly.",
       });
     }
 
@@ -819,7 +824,6 @@ router.post("/explain-task", async (req, res) => {
     const explainPromise = (async () => {
       let raw = "";
       let parsed = fallbackExplanation;
-      let usedFallback = false;
 
       try {
         raw = await callGemini(prompt, {
@@ -832,23 +836,28 @@ router.post("/explain-task", async (req, res) => {
           safeParseJson(raw, fallbackExplanation),
           fallbackExplanation,
         );
-        usedFallback = Boolean(parsed.fromFallback);
+        const isInvalidAiPayload =
+          Boolean(parsed.fromFallback) ||
+          (!String(parsed.summary || "").trim() &&
+            (!Array.isArray(parsed.steps) || parsed.steps.length === 0));
+        if (isInvalidAiPayload) {
+          throw new Error("AI returned incomplete explanation payload");
+        }
       } catch (err) {
         if (isGeminiRateLimited(err)) {
           const retryAfterMs = getRetryAfterMs(err);
           explainCooldownUntil.set(explainKey, Date.now() + retryAfterMs);
         }
-        parsed = fallbackExplanation;
-        usedFallback = true;
         recordAiFallback("geminiRoutes.explain-task-call-failed");
+        throw err;
       }
 
       const responsePayload = {
         summary: parsed.summary,
         steps: parsed.steps || [],
         estimated_time: parsed.estimated_time,
-        source: usedFallback ? "System" : "AI",
-        fromFallback: usedFallback,
+        source: "AI",
+        fromFallback: false,
         raw,
       };
 
@@ -860,7 +869,7 @@ router.post("/explain-task", async (req, res) => {
             taskLookup,
             explanation: parsed,
             groupId,
-            source: usedFallback ? "System" : "AI",
+            source: "AI",
           });
 
           const responseTask =
@@ -916,26 +925,18 @@ router.post("/explain-task", async (req, res) => {
       title: req.body?.title,
       groupId: req.body?.groupId,
     });
-    const fallbackExplanation = buildRuleBasedTaskGuidance({
-      title: req.body?.title,
-      description: req.body?.description,
-      metadata: req.body?.metadata,
-    });
-
     if (isGeminiRateLimited(err)) {
       const retryAfterMs = getRetryAfterMs(err);
       explainCooldownUntil.set(explainKey, Date.now() + retryAfterMs);
       recordAiFallback("geminiRoutes.explain-task-top-level-429");
-      return res.json({
-        ...fallbackExplanation,
-        fromFallback: true,
+      return res.status(429).json({
+        error: "AI guidance is temporarily rate limited. Please retry shortly.",
       });
     }
 
     recordAiFallback("geminiRoutes.explain-task-top-level-error");
-    return res.json({
-      ...fallbackExplanation,
-      fromFallback: true,
+    return res.status(503).json({
+      error: "AI guidance is temporarily unavailable. Please retry in a moment.",
     });
   }
 });
@@ -962,12 +963,13 @@ router.post("/task-assistant", async (req, res) => {
     const members = Array.isArray(task?.members) ? task.members : [];
     
     const isGroupTask = members.length > 1;
-    const toneAndRoleInstruction = isGroupTask 
-      ? "You are a collaborative group assistant. Understand what each team member has done. Do not repeat obvious info or guess roles."
-      : "You are a personal assistant for this employee. Understand their role and respond based on the actual task content. Do not say 'please provide context' if the task has no subtasks, instead offer to help plan.";
+    const toneAndRoleInstruction = isGroupTask
+      ? "Act as an independent assistant for this group task. You are not a team member or participant. Use assignments and chat history when they help, but answer only as an external helper to the user who asked."
+      : "Act as an independent personal task assistant. You are not a participant in the task. Use task details and chat history when they help, but answer only as an external helper.";
 
-    const requesterName = String(requester?.name || "User");
-    const requesterIdentity = `The user currently speaking to you is: ${requesterName} (${requester?.role || "employee"}). Always respond to them directly using their name if they introduce themselves or ask who they are. Never confuse their identity.`;
+    const requesterName = String(requester?.name || "User").trim() || "User";
+    const requesterFirstName = requesterName.split(/\s+/).filter(Boolean)[0] || "User";
+    const requesterIdentity = `Current user: ${requesterName} (${requester?.role || "employee"}). Use simple conversational references such as "${requesterFirstName}" only when it feels natural or clarification is needed.`;
 
     const stepChecks = Array.isArray(task?.stepChecks) ? task.stepChecks : [];
 
@@ -999,7 +1001,7 @@ router.post("/task-assistant", async (req, res) => {
       }`,
     ];
     const historyLines = conversationHistory
-      .slice(-14)
+      .slice(-18)
       .map((item) => {
         const role =
           item?.role === "assistant" || item?.name === "Savy"
@@ -1013,15 +1015,17 @@ router.post("/task-assistant", async (req, res) => {
       "You are Savy, an intelligent task-aware AI assistant embedded in a task chat.",
       requesterIdentity,
       toneAndRoleInstruction,
-      "CRITICAL MEMORY RULES:",
-      "- You MUST read the Conversation History below. Do not ever say 'There is no previous conversation' if the history has messages.",
-      "- Continue naturally from previous messages. Reference past discussion when helpful.",
-      "- Do not act like this is a fresh conversation if history exists.",
-      "CRITICAL IDENTITY RULES:",
-      "- If the user says 'I am [Name]', acknowledge them by that name and confirm you will respond based on their assigned work.",
+      "Behavior:",
+      "- Treat the User Message as the direct prompt. Do not rewrite it into a narrower subtask-only request.",
+      "- Maintain memory from Conversation History in this same task chat and continue naturally from earlier messages.",
+      "- Answer meaningful general questions about the task, workflow, planning, blockers, priorities, or previous discussion.",
+      "- If details are missing, give the best useful answer from available context and ask one concise follow-up only when needed.",
+      "- Avoid generic repeated replies and unnecessary full-name usage.",
+      "- Never present yourself as part of the team or execution. Do not use team-member language such as 'we', 'our', or 'let's' when referring to task work.",
+      "- Address the requester directly and guide them with neutral, advisor-style wording.",
       "RESPONSE STYLE:",
-      "- Provide short, direct, actionable, and meaningful answers in 2-4 sentences.",
-      "- Be relevant to the task and avoid generic or repetitive filler.",
+      "- Be quick, clear, and helpful. Usually answer in 2-5 concise sentences.",
+      "- Be specific to the current task and conversation.",
       "",
       "Task Context:",
       ...contextLines,
@@ -1029,18 +1033,30 @@ router.post("/task-assistant", async (req, res) => {
       "Conversation History:",
       ...(historyLines.length ? historyLines : ["(This is the start of the conversation. No prior messages exist.)"]),
       "",
-      `Question from ${requesterName}: ${promptQuestion}`,
+      "User Message:",
+      promptQuestion,
     ].join("\n");
 
     const raw = await callGemini(prompt, {
-      maxRetries: 1,
-      baseDelayMs: 2000,
+      maxRetries: 0,
+      timeoutMs: 9000,
+      maxTokens: 700,
+      temperature: 0.45,
       context: "task-assistant",
-      lockKey: `task-assistant:${taskTitle}:${promptQuestion.slice(0, 32)}`,
+      lockEnabled: false,
     });
 
+    const sanitizeAssistantVoice = (value = "") =>
+      String(value || "")
+        .replace(/\bLet's\b/g, "You can")
+        .replace(/\blet's\b/g, "you can")
+        .replace(/\bWe\b/g, "You")
+        .replace(/\bwe\b/g, "you")
+        .replace(/\bOur\b/g, "The")
+        .replace(/\bour\b/g, "the");
+
     const answer =
-      String(raw || "").trim() ||
+      sanitizeAssistantVoice(String(raw || "").trim()) ||
       "I can help clarify the task, but I need a more specific question.";
 
     return res.json({ answer });

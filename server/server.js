@@ -366,6 +366,93 @@ const normalizeEstimatedDurationMinutes = (rawValue, fallbackMinutes = 60) => {
   return clampDurationMinutes(fallbackMinutes) || 60;
 };
 
+const getEndOfDay = (baseDate = new Date()) => {
+  const next = new Date(baseDate);
+  next.setHours(23, 59, 59, 999);
+  return next;
+};
+
+const getEndOfWeek = (baseDate = new Date()) => {
+  const next = new Date(baseDate);
+  const day = next.getDay(); // 0 Sun ... 6 Sat
+  const daysUntilSunday = (7 - day) % 7;
+  next.setDate(next.getDate() + daysUntilSunday);
+  next.setHours(23, 59, 59, 999);
+  return next;
+};
+
+const parseNaturalLanguageDeadline = (task = {}) => {
+  const text = `${task.taskTitle || ""} ${task.taskDescription || ""}`
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!text) return null;
+
+  const now = new Date();
+
+  if (/\b(today|by today|eod|end of day|tonight)\b/.test(text)) {
+    return getEndOfDay(now);
+  }
+  if (/\b(tomorrow|by tomorrow)\b/.test(text)) {
+    const next = new Date(now);
+    next.setDate(next.getDate() + 1);
+    return getEndOfDay(next);
+  }
+  if (
+    /\b(this weekend|by this weekend|weekend|this week end|by this week end|week end|this weak end|by this weak end)\b/.test(
+      text,
+    )
+  ) {
+    const next = new Date(now);
+    const day = next.getDay();
+    const daysUntilSaturday = (6 - day + 7) % 7;
+    next.setDate(next.getDate() + daysUntilSaturday);
+    next.setHours(23, 59, 59, 999);
+    return next;
+  }
+  if (
+    /\b(this week|by this week|this weak|by this weak|end of week|end of weak|eow)\b/.test(
+      text,
+    )
+  ) {
+    return getEndOfWeek(now);
+  }
+
+  const weekdayMatch = text.match(
+    /\bby\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/,
+  );
+  if (weekdayMatch) {
+    const weekdayMap = {
+      sunday: 0,
+      monday: 1,
+      tuesday: 2,
+      wednesday: 3,
+      thursday: 4,
+      friday: 5,
+      saturday: 6,
+    };
+    const targetDay = weekdayMap[weekdayMatch[1]];
+    const next = new Date(now);
+    const daysUntil = (targetDay - next.getDay() + 7) % 7 || 7;
+    next.setDate(next.getDate() + daysUntil);
+    next.setHours(23, 59, 59, 999);
+    return next;
+  }
+
+  return null;
+};
+
+const resolveEffectiveDeadline = (task = {}) => {
+  const explicitDeadline = toTaskDeadline(task.taskDate);
+  const naturalDeadline = parseNaturalLanguageDeadline(task);
+  if (explicitDeadline && naturalDeadline) {
+    return explicitDeadline.getTime() <= naturalDeadline.getTime()
+      ? explicitDeadline
+      : naturalDeadline;
+  }
+  return explicitDeadline || naturalDeadline || null;
+};
+
 const computeFallbackEstimatedDurationMinutes = (task = {}) => {
   const complexity = Math.max(1, Math.min(5, Number(task.complexity) || 3));
   const descriptionLength = String(task.taskDescription || "").trim().length;
@@ -387,7 +474,164 @@ const computeFallbackEstimatedDurationMinutes = (task = {}) => {
   const categoryBoost = categoryBoostMap[normalizedCategory] || 15;
 
   const baseMinutes = 30 + complexity * 15 + categoryBoost + descriptionBoost;
+  const deadline = resolveEffectiveDeadline(task);
+  if (deadline) {
+    const remainingMinutes = Math.max(
+      10,
+      Math.floor((deadline.getTime() - Date.now()) / 60000),
+    );
+    // Keep estimate realistic relative to available window.
+    const windowScaled = Math.max(
+      20,
+      Math.round(
+        Math.min(baseMinutes * 1.4, Math.max(baseMinutes, remainingMinutes * 0.65)),
+      ),
+    );
+    return normalizeEstimatedDurationMinutes(
+      Math.min(windowScaled, remainingMinutes),
+      baseMinutes,
+    );
+  }
   return normalizeEstimatedDurationMinutes(baseMinutes, 60);
+};
+
+const getTaskDeadlinePressure = (task = {}) => {
+  const deadline = resolveEffectiveDeadline(task);
+  if (!deadline) {
+    return { deadline, daysUntilDue: null, overdue: false, dueSoon: false };
+  }
+
+  const now = new Date();
+  const diffMs = deadline.getTime() - now.getTime();
+  const daysUntilDue = diffMs / (24 * 60 * 60 * 1000);
+  return {
+    deadline,
+    daysUntilDue,
+    overdue: diffMs < 0,
+    dueSoon: daysUntilDue <= 2,
+  };
+};
+
+const deriveDynamicTaskPriority = ({
+  task = {},
+  activeTasksForEmployee = 0,
+  newTasksForEmployee = 0,
+  dueSoonTasksForEmployee = 0,
+} = {}) => {
+  const { daysUntilDue, overdue, dueSoon } = getTaskDeadlinePressure(task);
+  const text = `${task.taskTitle || ""} ${task.taskDescription || ""} ${task.category || ""}`.toLowerCase();
+  const urgentLanguage =
+    /\b(urgent|asap|critical|immediate|immediately|blocked|blocker|production|client|deadline|important|imp|now)\b/.test(
+      text,
+    );
+  const lowPressureLanguage =
+    /\b(low priority|when you get a chance|can wait|not urgent|someday|later)\b/.test(
+      text,
+    );
+  const workload = Number(activeTasksForEmployee) + Number(newTasksForEmployee);
+  const dueSoonLoad = Number(dueSoonTasksForEmployee) || 0;
+  const complexity = Math.max(1, Math.min(5, Number(task.complexity) || 3));
+
+  let score = 35 + complexity * 6;
+  if (urgentLanguage) score += 28;
+  if (lowPressureLanguage) score -= 22;
+  if (overdue) score += 35;
+  else if (daysUntilDue !== null && daysUntilDue <= 1) score += 28;
+  else if (daysUntilDue !== null && daysUntilDue <= 3) score += 18;
+  else if (daysUntilDue !== null && daysUntilDue <= 7) score += 8;
+  if (workload >= 8 && dueSoon) score += 8;
+  if (workload >= 8 && !dueSoon && !urgentLanguage) score -= 14;
+  if (workload >= 5 && dueSoonLoad >= 2 && !urgentLanguage) score -= 10;
+  if (workload >= 7 && !dueSoon && daysUntilDue !== null && daysUntilDue > 3)
+    score -= 12;
+  if (workload <= 1 && urgentLanguage) score += 5;
+
+  const priority = score >= 68 ? "High" : score >= 43 ? "Medium" : "Low";
+  const dueText =
+    daysUntilDue === null
+      ? "no dated deadline"
+      : overdue
+        ? "overdue"
+        : `${Math.max(0, Math.ceil(daysUntilDue))} day(s) until deadline`;
+  const reason = `Dynamic priority: ${priority} from ${dueText}, ${workload} active/new task(s), ${dueSoonLoad} near-deadline task(s), ${complexity}/5 complexity${urgentLanguage ? ", and urgent wording" : ""}.`;
+
+  return { priority, reason };
+};
+
+const clampPriorityByWorkloadAndDeadline = ({
+  proposedPriority = "Medium",
+  task = {},
+  activeTasksForEmployee = 0,
+  newTasksForEmployee = 0,
+} = {}) => {
+  const { daysUntilDue, dueSoon, overdue } = getTaskDeadlinePressure(task);
+  const text = `${task.taskTitle || ""} ${task.taskDescription || ""} ${task.category || ""}`.toLowerCase();
+  const explicitUrgent =
+    /\b(urgent|asap|critical|immediate|immediately|blocked|blocker|production|important|now)\b/.test(
+      text,
+    );
+  const workload = Number(activeTasksForEmployee) + Number(newTasksForEmployee);
+
+  if (
+    proposedPriority === "High" &&
+    workload >= 3 &&
+    !overdue &&
+    !explicitUrgent &&
+    !(daysUntilDue !== null && daysUntilDue <= 1) &&
+    !dueSoon
+  ) {
+    return "Medium";
+  }
+
+  if (
+    proposedPriority === "High" &&
+    workload >= 5 &&
+    !overdue &&
+    !explicitUrgent
+  ) {
+    return "Medium";
+  }
+
+  return proposedPriority;
+};
+
+const applyDynamicPriorities = (employee = {}) => {
+  if (!employee || !Array.isArray(employee.tasks)) return false;
+  const activeTasksForEmployee = employee.tasks.filter(
+    (task) => task.active && !task.isDeleted && !task.notAccepted,
+  ).length;
+  const newTasksForEmployee = employee.tasks.filter(
+    (task) => task.newTask && !task.isDeleted && !task.notAccepted,
+  ).length;
+  const dueSoonTasksForEmployee = employee.tasks.filter((task) => {
+    if (!task || task.completed || task.failed || task.isDeleted || task.notAccepted) {
+      return false;
+    }
+    const pressure = getTaskDeadlinePressure(task);
+    return Boolean(pressure.dueSoon || pressure.overdue);
+  }).length;
+  let changed = false;
+
+  employee.tasks.forEach((task) => {
+    if (!task || task.completed || task.failed || task.isDeleted || task.notAccepted) {
+      return;
+    }
+    const dynamic = deriveDynamicTaskPriority({
+      task,
+      activeTasksForEmployee,
+      newTasksForEmployee,
+      dueSoonTasksForEmployee,
+    });
+    if (task.aiEstimationPending || task.aiPriority !== dynamic.priority) {
+      task.aiPriority = dynamic.priority;
+      if (!task.aiPriorityReason || /^Dynamic priority:/.test(task.aiPriorityReason)) {
+        task.aiPriorityReason = dynamic.reason;
+      }
+      changed = true;
+    }
+  });
+
+  return changed;
 };
 
 const extractEstimatedDurationCandidate = (payload = {}) => {
@@ -704,12 +948,31 @@ const enrichTaskAiMetadataInBackground = async ({
 }) => {
   if (!employeeEmail || !task?._id) return;
 
+  const owner = await Employee.findOne({ email: employeeEmail });
+  const activeTasksForEmployee = (owner?.tasks || []).filter(
+    (item) => item.active && !item.isDeleted && !item.notAccepted,
+  ).length;
+  const newTasksForEmployee = (owner?.tasks || []).filter(
+    (item) => item.newTask && !item.isDeleted && !item.notAccepted,
+  ).length;
+  const dueSoonTasksForEmployee = (owner?.tasks || []).filter((item) => {
+    if (!item || item.completed || item.failed || item.isDeleted || item.notAccepted) {
+      return false;
+    }
+    const pressure = getTaskDeadlinePressure(item);
+    return Boolean(pressure.dueSoon || pressure.overdue);
+  }).length;
+  const dynamicPriority = deriveDynamicTaskPriority({
+    task,
+    activeTasksForEmployee,
+    newTasksForEmployee,
+    dueSoonTasksForEmployee,
+  });
   const fallbackEstimatedMinutes =
     computeFallbackEstimatedDurationMinutes(task);
-  let aiPriority = normalizePriorityValue(task.aiPriority);
+  let aiPriority = dynamicPriority.priority;
   let aiPriorityReason =
-    task.aiPriorityReason ||
-    "Fallback priority applied while AI processing is unavailable.";
+    dynamicPriority.reason;
   let estimatedDuration = hasManualEstimate
     ? normalizeEstimatedDurationMinutes(
         task.estimatedDuration,
@@ -725,6 +988,9 @@ const enrichTaskAiMetadataInBackground = async ({
         category: task.category || "",
         estimatedDuration: hasManualEstimate ? task.estimatedDuration : null,
         complexity: task.complexity,
+        deadline: task.taskDate || null,
+        activeTasks: activeTasksForEmployee,
+        newTasks: newTasksForEmployee,
       },
     });
 
@@ -736,7 +1002,12 @@ const enrichTaskAiMetadataInBackground = async ({
     });
 
     const parsed = safeParseJson(raw, {});
-    aiPriority = normalizePriorityValue(parsed?.priority);
+    aiPriority = clampPriorityByWorkloadAndDeadline({
+      proposedPriority: normalizePriorityValue(parsed?.priority),
+      task,
+      activeTasksForEmployee,
+      newTasksForEmployee,
+    });
     aiPriorityReason =
       String(parsed?.reason || "").trim() ||
       `AI marked this task as ${aiPriority} priority based on urgency and complexity.`;
@@ -750,9 +1021,9 @@ const enrichTaskAiMetadataInBackground = async ({
     }
   } catch (err) {
     recordAiFallback("server.task-create-priority-and-estimate");
-    aiPriority = aiPriority || "Medium";
+    aiPriority = dynamicPriority.priority;
     aiPriorityReason =
-      "AI temporarily unavailable. Applied fallback priority and estimated duration.";
+      `${dynamicPriority.reason} AI temporarily unavailable; using data-driven system estimate.`;
     if (!hasManualEstimate) {
       estimatedDuration = fallbackEstimatedMinutes;
     }
@@ -799,12 +1070,64 @@ const enrichGroupTaskAiMetadataInBackground = async ({
 }) => {
   if (!groupId || !baseTask) return;
 
+  const groupEmployees = await Employee.find({ "tasks.groupId": groupId });
+  const avgActiveTasks = groupEmployees.length
+    ? Math.round(
+        groupEmployees.reduce(
+          (sum, employee) =>
+            sum +
+            (employee.tasks || []).filter(
+              (task) => task.active && !task.isDeleted && !task.notAccepted,
+            ).length,
+          0,
+        ) / groupEmployees.length,
+      )
+    : 0;
+  const avgNewTasks = groupEmployees.length
+    ? Math.round(
+        groupEmployees.reduce(
+          (sum, employee) =>
+            sum +
+            (employee.tasks || []).filter(
+              (task) => task.newTask && !task.isDeleted && !task.notAccepted,
+            ).length,
+          0,
+        ) / groupEmployees.length,
+      )
+    : 0;
+  const avgDueSoonTasks = groupEmployees.length
+    ? Math.round(
+        groupEmployees.reduce(
+          (sum, employee) =>
+            sum +
+            (employee.tasks || []).filter((task) => {
+              if (
+                !task ||
+                task.completed ||
+                task.failed ||
+                task.isDeleted ||
+                task.notAccepted
+              ) {
+                return false;
+              }
+              const pressure = getTaskDeadlinePressure(task);
+              return Boolean(pressure.dueSoon || pressure.overdue);
+            }).length,
+          0,
+        ) / groupEmployees.length,
+      )
+    : 0;
+  const dynamicPriority = deriveDynamicTaskPriority({
+    task: baseTask,
+    activeTasksForEmployee: avgActiveTasks,
+    newTasksForEmployee: avgNewTasks,
+    dueSoonTasksForEmployee: avgDueSoonTasks,
+  });
   const fallbackEstimatedMinutes =
     computeFallbackEstimatedDurationMinutes(baseTask);
-  let aiPriority = normalizePriorityValue(baseTask.aiPriority);
+  let aiPriority = dynamicPriority.priority;
   let aiPriorityReason =
-    baseTask.aiPriorityReason ||
-    "Fallback priority applied while AI processing is unavailable.";
+    dynamicPriority.reason;
   let estimatedDuration = hasManualEstimate
     ? normalizeEstimatedDurationMinutes(
         baseTask.estimatedDuration,
@@ -822,6 +1145,9 @@ const enrichGroupTaskAiMetadataInBackground = async ({
           ? baseTask.estimatedDuration
           : null,
         complexity: baseTask.complexity,
+        deadline: baseTask.taskDate || null,
+        activeTasks: avgActiveTasks,
+        newTasks: avgNewTasks,
       },
     });
 
@@ -833,7 +1159,12 @@ const enrichGroupTaskAiMetadataInBackground = async ({
     });
 
     const parsed = safeParseJson(raw, {});
-    aiPriority = normalizePriorityValue(parsed?.priority);
+    aiPriority = clampPriorityByWorkloadAndDeadline({
+      proposedPriority: normalizePriorityValue(parsed?.priority),
+      task: baseTask,
+      activeTasksForEmployee: avgActiveTasks,
+      newTasksForEmployee: avgNewTasks,
+    });
     aiPriorityReason =
       String(parsed?.reason || "").trim() ||
       `AI marked this task as ${aiPriority} priority based on urgency and complexity.`;
@@ -847,9 +1178,9 @@ const enrichGroupTaskAiMetadataInBackground = async ({
     }
   } catch (err) {
     recordAiFallback("server.group-task-priority-and-estimate");
-    aiPriority = aiPriority || "Medium";
+    aiPriority = dynamicPriority.priority;
     aiPriorityReason =
-      "AI temporarily unavailable. Applied fallback priority and estimated duration.";
+      `${dynamicPriority.reason} AI temporarily unavailable; using data-driven system estimate.`;
     if (!hasManualEstimate) {
       estimatedDuration = fallbackEstimatedMinutes;
     }
@@ -1517,6 +1848,18 @@ app.get("/api/employees", async (req, res) => {
         includeArchived ? {} : { isArchived: { $ne: true } },
       );
     }
+    let prioritiesChanged = false;
+    for (const employee of employees) {
+      if (applyDynamicPriorities(employee)) {
+        prioritiesChanged = true;
+        await employee.save();
+      }
+    }
+    if (prioritiesChanged) {
+      employees = await Employee.find(
+        includeArchived ? {} : { isArchived: { $ne: true } },
+      );
+    }
     res.json(employees);
   } catch (err) {
     console.error(err);
@@ -1633,6 +1976,9 @@ app.get("/api/employees/:email", async (req, res) => {
           await normalizeGroupTaskData({ groupId, ioInstance });
         }
         emp = await Employee.findOne({ email: req.params.email });
+      }
+      if (applyDynamicPriorities(emp)) {
+        await emp.save();
       }
       res.json(emp);
     } else {
@@ -1949,6 +2295,7 @@ app.put("/api/employees/:email", async (req, res) => {
     }
 
     applyTaskTimeouts(update);
+    applyDynamicPriorities(update);
 
     const emp = await Employee.findOneAndUpdate(
       { email: req.params.email },
@@ -2057,15 +2404,13 @@ app.post("/api/employees/:email/tasks", async (req, res) => {
       }
       const ioInstance = req.app.get("io");
       const now = new Date();
-      const requestedEstimatedDuration = Number(req.body.estimatedDuration);
-      const hasManualEstimate =
-        Number.isFinite(requestedEstimatedDuration) &&
-        requestedEstimatedDuration > 0;
+      const hasManualEstimate = false;
+      const initialEstimatedDuration = computeFallbackEstimatedDurationMinutes(
+        req.body,
+      );
       const rawTask = {
         ...req.body,
-        estimatedDuration: hasManualEstimate
-          ? normalizeEstimatedDurationMinutes(requestedEstimatedDuration, 60)
-          : 0,
+        estimatedDuration: initialEstimatedDuration,
         acceptanceTimeLimitMinutes:
           Number(req.body.acceptanceTimeLimitMinutes) || 0,
         aiEstimationPending: !hasManualEstimate,
@@ -2081,10 +2426,37 @@ app.post("/api/employees/:email/tasks", async (req, res) => {
       }
       rawTask.notAccepted = false;
 
+      const currentActiveTasks = (emp.tasks || []).filter(
+        (task) => task.active && !task.isDeleted && !task.notAccepted,
+      ).length;
+      const currentNewTasks = (emp.tasks || []).filter(
+        (task) => task.newTask && !task.isDeleted && !task.notAccepted,
+      ).length;
+      const currentDueSoonTasks = (emp.tasks || []).filter((task) => {
+        if (!task || task.completed || task.failed || task.isDeleted || task.notAccepted) {
+          return false;
+        }
+        const pressure = getTaskDeadlinePressure(task);
+        return Boolean(pressure.dueSoon || pressure.overdue);
+      }).length;
+      const dynamicPriority = deriveDynamicTaskPriority({
+        task: rawTask,
+        activeTasksForEmployee: currentActiveTasks,
+        newTasksForEmployee: currentNewTasks + 1,
+        dueSoonTasksForEmployee: currentDueSoonTasks,
+      });
+      dynamicPriority.priority = clampPriorityByWorkloadAndDeadline({
+        proposedPriority: dynamicPriority.priority,
+        task: rawTask,
+        activeTasksForEmployee: currentActiveTasks,
+        newTasksForEmployee: currentNewTasks + 1,
+      });
+
       const taskToSave = {
         ...rawTask,
-        aiPriority: "Medium",
-        aiPriorityReason: "Analyzing task priority and duration...",
+        aiPriority: dynamicPriority.priority,
+        aiPriorityReason:
+          `${dynamicPriority.reason} AI refinement is running in the background.`,
       };
 
       emp.tasks.push(taskToSave);
@@ -2173,18 +2545,13 @@ app.post("/api/group-tasks", async (req, res) => {
 
     const groupId = `group-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const members = buildGroupMembers(employees);
-    const requestedEstimatedDuration = Number(req.body.estimatedDuration);
-    const hasManualEstimate =
-      Number.isFinite(requestedEstimatedDuration) &&
-      requestedEstimatedDuration > 0;
+    const hasManualEstimate = false;
     const baseTask = {
       taskTitle: req.body.taskTitle,
       taskDescription: req.body.taskDescription,
       taskDate: req.body.taskDate,
       category: req.body.category,
-      estimatedDuration: hasManualEstimate
-        ? normalizeEstimatedDurationMinutes(requestedEstimatedDuration, 60)
-        : 0,
+      estimatedDuration: computeFallbackEstimatedDurationMinutes(req.body),
       acceptanceTimeLimitMinutes:
         Number(req.body.acceptanceTimeLimitMinutes) || 0,
       aiEstimationPending: !hasManualEstimate,
@@ -2202,8 +2569,57 @@ app.post("/api/group-tasks", async (req, res) => {
       chatEnabled: true,
       chatClosed: false,
       aiPriority: "Medium",
-      aiPriorityReason: "Analyzing task priority and duration...",
+      aiPriorityReason: "Dynamic priority is being calculated...",
     };
+
+    const avgOpenTasks = Math.round(
+      employees.reduce(
+        (sum, employee) =>
+          sum +
+          (employee.tasks || []).filter(
+            (task) =>
+              (task.active || task.newTask) &&
+              !task.isDeleted &&
+              !task.notAccepted,
+          ).length,
+        0,
+      ) / employees.length,
+    );
+    const avgDueSoonTasks = Math.round(
+      employees.reduce(
+        (sum, employee) =>
+          sum +
+          (employee.tasks || []).filter((task) => {
+            if (
+              !task ||
+              task.completed ||
+              task.failed ||
+              task.isDeleted ||
+              task.notAccepted
+            ) {
+              return false;
+            }
+            const pressure = getTaskDeadlinePressure(task);
+            return Boolean(pressure.dueSoon || pressure.overdue);
+          }).length,
+        0,
+      ) / employees.length,
+    );
+    const dynamicPriority = deriveDynamicTaskPriority({
+      task: baseTask,
+      activeTasksForEmployee: avgOpenTasks,
+      newTasksForEmployee: 1,
+      dueSoonTasksForEmployee: avgDueSoonTasks,
+    });
+    dynamicPriority.priority = clampPriorityByWorkloadAndDeadline({
+      proposedPriority: dynamicPriority.priority,
+      task: baseTask,
+      activeTasksForEmployee: avgOpenTasks,
+      newTasksForEmployee: 1,
+    });
+    baseTask.aiPriority = dynamicPriority.priority;
+    baseTask.aiPriorityReason =
+      `${dynamicPriority.reason} AI refinement is running in the background.`;
 
     if (baseTask.acceptanceTimeLimitMinutes > 0) {
       baseTask.acceptanceDeadline = new Date(
@@ -2256,6 +2672,154 @@ app.post("/api/group-tasks", async (req, res) => {
     });
   } catch (err) {
     console.error("Create group task error:", err);
+    return res.status(500).json({ error: "Server error" });
+  }
+});
+
+app.post("/api/employees/:email/tasks/:taskId/accept", async (req, res) => {
+  try {
+    const email = String(req.params.email || "")
+      .trim()
+      .toLowerCase();
+    const taskId = String(req.params.taskId || "").trim();
+    const employee = await Employee.findOne({ email });
+    if (!employee) {
+      return res.status(404).json({ error: "Employee not found" });
+    }
+
+    const task = employee.tasks.id(taskId);
+    if (!task) return res.status(404).json({ error: "Task not found" });
+    if (task.groupTask && task.groupId) {
+      return res
+        .status(400)
+        .json({ error: "Use group task accept endpoint" });
+    }
+    if (task.notAccepted) {
+      return res.status(409).json({ error: "Task acceptance window expired" });
+    }
+    if (!task.newTask && task.active) {
+      return res.json({ success: true, task, employee });
+    }
+    if (!task.newTask) {
+      return res.status(409).json({ error: "Task is not awaiting acceptance" });
+    }
+
+    const now = new Date();
+    task.newTask = false;
+    task.active = true;
+    task.completed = false;
+    task.failed = false;
+    task.completedAt = null;
+    task.onTime = true;
+    task.acceptedAt = now;
+    task.startedAt = now;
+    task.chatEnabled = true;
+    task.chatClosed = false;
+    employee.taskCounts = computeTaskCounts(employee.tasks);
+    applyDynamicPriorities(employee);
+
+    await employee.save();
+
+    const ioInstance = req.app.get("io");
+    ioInstance?.emit("employeeUpdated", { email: employee.email, employee });
+    ioInstance?.emit("taskStatusChanged", {
+      email: employee.email,
+      employee,
+    });
+
+    const chatMessage = buildChatMessage({
+      senderName: "System",
+      message: `${email} accepted the task`,
+      type: "system",
+    });
+    await appendChatMessageForTask({
+      employee,
+      task,
+      chatMessage,
+      ioInstance,
+    });
+
+    return res.json({ success: true, task, employee });
+  } catch (err) {
+    console.error("Accept task error:", err);
+    return res.status(500).json({ error: "Server error" });
+  }
+});
+
+app.post("/api/employees/:email/tasks/:taskId/status", async (req, res) => {
+  try {
+    const email = String(req.params.email || "")
+      .trim()
+      .toLowerCase();
+    const taskId = String(req.params.taskId || "").trim();
+    const status = String(req.body?.status || "")
+      .trim()
+      .toLowerCase();
+    if (!["completed", "failed", "notaccepted"].includes(status)) {
+      return res.status(400).json({ error: "Invalid status update request" });
+    }
+
+    const employee = await Employee.findOne({ email });
+    if (!employee) {
+      return res.status(404).json({ error: "Employee not found" });
+    }
+    const task = employee.tasks.id(taskId);
+    if (!task) return res.status(404).json({ error: "Task not found" });
+    if (task.groupTask && task.groupId) {
+      return res.status(400).json({ error: "Use group task endpoints" });
+    }
+
+    const now = new Date();
+    if (status === "notaccepted") {
+      task.newTask = false;
+      task.active = false;
+      task.completed = false;
+      task.failed = false;
+      task.notAccepted = true;
+      task.completedAt = null;
+      task.completionTime = null;
+      task.onTime = null;
+    } else if (status === "completed") {
+      if (!canMarkTaskComplete(task, email)) {
+        return res.status(409).json({
+          error:
+            "Please complete all your assigned subtasks before marking task as complete",
+        });
+      }
+      task.newTask = false;
+      task.active = false;
+      task.completed = true;
+      task.failed = false;
+      task.notAccepted = false;
+      task.completedAt = now;
+      task.completionTime = resolveCompletionTimeMinutes(task, now);
+      task.onTime = computeOnTime(now, task.taskDate);
+    } else if (status === "failed") {
+      task.newTask = false;
+      task.active = false;
+      task.completed = false;
+      task.failed = true;
+      task.notAccepted = false;
+      task.completedAt = now;
+      task.completionTime = resolveCompletionTimeMinutes(task, now);
+      task.onTime = computeOnTime(now, task.taskDate);
+    }
+
+    applyTaskTimeouts(employee);
+    employee.taskCounts = computeTaskCounts(employee.tasks);
+    applyDynamicPriorities(employee);
+    await employee.save();
+
+    const ioInstance = req.app.get("io");
+    ioInstance?.emit("employeeUpdated", { email: employee.email, employee });
+    ioInstance?.emit("taskStatusChanged", {
+      email: employee.email,
+      employee,
+    });
+
+    return res.json({ success: true, task, employee });
+  } catch (err) {
+    console.error("Update task status error:", err);
     return res.status(500).json({ error: "Server error" });
   }
 });
@@ -2333,6 +2897,76 @@ app.post("/api/group-tasks/:groupId/accept", async (req, res) => {
     return res.json({ success: true, acceptedEmails, employees: updated });
   } catch (err) {
     console.error("Accept group task error:", err);
+    return res.status(500).json({ error: "Server error" });
+  }
+});
+
+app.post("/api/group-tasks/:groupId/status", async (req, res) => {
+  try {
+    const groupId = String(req.params.groupId || "").trim();
+    const employeeEmail = String(req.body?.employeeEmail || "")
+      .trim()
+      .toLowerCase();
+    const status = String(req.body?.status || "")
+      .trim()
+      .toLowerCase();
+    if (!groupId) return res.status(400).json({ error: "Group task not found" });
+    if (!employeeEmail) {
+      return res.status(400).json({ error: "Employee email is required" });
+    }
+    if (!["completed", "failed"].includes(status)) {
+      return res.status(400).json({ error: "Invalid status update request" });
+    }
+
+    const employee = await Employee.findOne({ email: employeeEmail });
+    if (!employee) {
+      return res.status(404).json({ error: "Employee not found" });
+    }
+    const task = employee.tasks.find((item) => item.groupId === groupId);
+    if (!task) return res.status(404).json({ error: "Task not found" });
+
+    const now = new Date();
+    if (status === "completed") {
+      if (!canMarkTaskComplete(task, employeeEmail)) {
+        return res.status(409).json({
+          error:
+            "Please complete all your assigned subtasks before marking task as complete",
+        });
+      }
+      task.newTask = false;
+      task.active = false;
+      task.completed = true;
+      task.failed = false;
+      task.notAccepted = false;
+      task.completedAt = now;
+      task.completionTime = resolveCompletionTimeMinutes(task, now);
+      task.onTime = computeOnTime(now, task.taskDate);
+    } else if (status === "failed") {
+      task.newTask = false;
+      task.active = false;
+      task.completed = false;
+      task.failed = true;
+      task.notAccepted = false;
+      task.completedAt = now;
+      task.completionTime = resolveCompletionTimeMinutes(task, now);
+      task.onTime = computeOnTime(now, task.taskDate);
+    }
+
+    applyTaskTimeouts(employee);
+    employee.taskCounts = computeTaskCounts(employee.tasks);
+    applyDynamicPriorities(employee);
+    await employee.save();
+
+    const ioInstance = req.app.get("io");
+    ioInstance?.emit("employeeUpdated", { email: employee.email, employee });
+    ioInstance?.emit("taskStatusChanged", {
+      email: employee.email,
+      employee,
+    });
+
+    return res.json({ success: true, task, employee });
+  } catch (err) {
+    console.error("Update group task status error:", err);
     return res.status(500).json({ error: "Server error" });
   }
 });
@@ -2739,9 +3373,15 @@ app.post("/api/employees/:email/tasks/:taskId/extend", async (req, res) => {
       .trim()
       .toLowerCase();
     const taskId = String(req.params.taskId || "").trim();
-    const days = Number(req.body?.days || 0);
-    if (!Number.isFinite(days) || days <= 0) {
-      return res.status(400).json({ error: "Days must be greater than 0" });
+    const minutesInput = Number(req.body?.minutes);
+    const daysInput = Number(req.body?.days);
+    const addedMinutes = Number.isFinite(minutesInput) && minutesInput > 0
+      ? Math.round(minutesInput)
+      : Number.isFinite(daysInput) && daysInput > 0
+        ? Math.round(daysInput * 24 * 60)
+        : 0;
+    if (!Number.isFinite(addedMinutes) || addedMinutes <= 0) {
+      return res.status(400).json({ error: "Minutes must be greater than 0" });
     }
     const employee = await Employee.findOne({ email });
     if (!employee) {
@@ -2750,15 +3390,10 @@ app.post("/api/employees/:email/tasks/:taskId/extend", async (req, res) => {
     const task = employee.tasks.id(taskId);
     if (!task) return res.status(404).json({ error: "Task not found" });
 
-    const addedMinutes = Math.round(days * 24 * 60);
     task.estimatedDuration = Math.max(
       0,
       Number(task.estimatedDuration || 0) + addedMinutes,
     );
-    const nextDate = addDaysToTaskDate(task.taskDate, days);
-    if (nextDate) {
-      task.taskDate = nextDate.toISOString().slice(0, 10);
-    }
 
     const now = new Date();
     reactivateTaskAfterExtension(task, now);
@@ -2785,7 +3420,7 @@ app.post("/api/employees/:email/tasks/:taskId/extend", async (req, res) => {
       ioInstance,
     });
 
-    return res.json({ success: true, task });
+    return res.json({ success: true, task, employee });
   } catch (err) {
     console.error("Extend task error:", err);
     return res.status(500).json({ error: "Server error" });
@@ -2795,18 +3430,23 @@ app.post("/api/employees/:email/tasks/:taskId/extend", async (req, res) => {
 app.post("/api/group-tasks/:groupId/extend", async (req, res) => {
   try {
     const groupId = req.params.groupId;
-    const days = Number(req.body?.days || 0);
+    const minutesInput = Number(req.body?.minutes);
+    const daysInput = Number(req.body?.days);
+    const addedMinutes = Number.isFinite(minutesInput) && minutesInput > 0
+      ? Math.round(minutesInput)
+      : Number.isFinite(daysInput) && daysInput > 0
+        ? Math.round(daysInput * 24 * 60)
+        : 0;
     const memberEmail = String(req.body?.memberEmail || "")
       .trim()
       .toLowerCase();
-    if (!Number.isFinite(days) || days <= 0) {
-      return res.status(400).json({ error: "Days must be greater than 0" });
+    if (!Number.isFinite(addedMinutes) || addedMinutes <= 0) {
+      return res.status(400).json({ error: "Minutes must be greater than 0" });
     }
     const employees = await Employee.find({ "tasks.groupId": groupId });
     if (!employees.length) {
       return res.status(404).json({ error: "Group task not found" });
     }
-    const addedMinutes = Math.round(days * 24 * 60);
     const updated = [];
     const now = new Date();
 
@@ -2819,10 +3459,6 @@ app.post("/api/group-tasks/:groupId/extend", async (req, res) => {
           0,
           Number(task.estimatedDuration || 0) + addedMinutes,
         );
-        const nextDate = addDaysToTaskDate(task.taskDate, days);
-        if (nextDate) {
-          task.taskDate = nextDate.toISOString().slice(0, 10);
-        }
         reactivateTaskAfterExtension(task, now);
       }
 
@@ -2844,6 +3480,19 @@ app.post("/api/group-tasks/:groupId/extend", async (req, res) => {
 
       if (memberEmail) {
         const empEmail = String(employee.email || "").toLowerCase();
+        if (!Array.isArray(task.groupMemberEstimates)) {
+          task.groupMemberEstimates = [];
+        }
+        if (
+          !task.groupMemberEstimates.some(
+            (entry) => String(entry?.email || "").toLowerCase() === memberEmail,
+          )
+        ) {
+          task.groupMemberEstimates.push({
+            email: memberEmail,
+            estimatedMinutes: addedMinutes,
+          });
+        }
         if (empEmail === memberEmail) {
           syncEstimatedDurationFromMemberEstimate(task, memberEmail);
           reactivateTaskAfterExtension(task, now);
@@ -2881,7 +3530,7 @@ app.post("/api/group-tasks/:groupId/extend", async (req, res) => {
       ioInstance,
     });
 
-    return res.json({ success: true, groupId });
+    return res.json({ success: true, groupId, employees: updated });
   } catch (err) {
     console.error("Extend group task error:", err);
     return res.status(500).json({ error: "Server error" });
